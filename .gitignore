@@ -1,0 +1,28 @@
+# Nuxt
+.output
+.data
+.nuxt
+.nitro
+.cache
+dist
+
+# Node
+node_modules
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+wallet/
+
+# Editors / OS
+.idea
+.DS_Store
+Thumbs.db
+
+# Test output
+coverage
+playwright-report
+test-results
