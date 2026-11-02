@@ -26,6 +26,7 @@ export function labLimits() {
     maxRows: Number(l.maxRows),
     maxConcurrentJobs: Number(l.maxConcurrentJobs),
     maxExtensionTables: Number(l.maxExtensionTables),
+    maxUploadMb: Number(l.maxUploadMb ?? 512),
   }
 }
 

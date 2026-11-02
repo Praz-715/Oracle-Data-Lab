@@ -17,11 +17,11 @@ export const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: 'Data',
     items: [
-      { to: '/datasets', label: 'Dataset Sources', icon: 'lucide:library', planned: true },
+      { to: '/datasets', label: 'Dataset Sources', icon: 'lucide:library' },
       { to: '/schema', label: 'Schema Designer', icon: 'lucide:blocks' },
       { to: '/generator', label: 'Data Generator', icon: 'lucide:factory' },
       { to: '/quality', label: 'Data Quality', icon: 'lucide:shield-check' },
-      { to: '/import', label: 'Import Manager', icon: 'lucide:file-input', planned: true },
+      { to: '/import', label: 'Import Manager', icon: 'lucide:file-input' },
       { to: '/explorer', label: 'Table Explorer', icon: 'lucide:table-2' },
       { to: '/analytics', label: 'Visual Analytics', icon: 'lucide:chart-column' },
     ],

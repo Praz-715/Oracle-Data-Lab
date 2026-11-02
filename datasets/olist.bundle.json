@@ -1,0 +1,75 @@
+{
+  "id": "olist",
+  "name": "Olist Brazilian E-Commerce",
+  "description": "About 100k real, anonymized orders (2016–2018) from the Olist marketplace: customers, sellers, products, order items, payments, reviews and 1M geolocation points. Loaded with primary keys, foreign keys and FK indexes so it works as a realistic relational test schema.",
+  "license": "CC BY-NC-SA 4.0 (Olist, via Kaggle)",
+  "url": "https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce",
+  "defaultPrefix": "OL_",
+  "tables": [
+    {
+      "file": "raw/product_category_name_translation.csv",
+      "table": "CATEGORY_TRANSLATION",
+      "primaryKey": ["PRODUCT_CATEGORY_NAME"]
+    },
+    {
+      "file": "raw/olist_customers_dataset.csv",
+      "table": "CUSTOMERS",
+      "primaryKey": ["CUSTOMER_ID"],
+      "indexes": [["CUSTOMER_UNIQUE_ID"], ["CUSTOMER_ZIP_CODE_PREFIX"]]
+    },
+    {
+      "file": "raw/olist_sellers_dataset.csv",
+      "table": "SELLERS",
+      "primaryKey": ["SELLER_ID"]
+    },
+    {
+      "file": "raw/olist_products_dataset.csv",
+      "table": "PRODUCTS",
+      "primaryKey": ["PRODUCT_ID"],
+      "columns": {
+        "product_name_lenght": { "name": "PRODUCT_NAME_LENGTH" },
+        "product_description_lenght": { "name": "PRODUCT_DESCRIPTION_LENGTH" }
+      },
+      "indexes": [["PRODUCT_CATEGORY_NAME"]],
+      "notes": "13 products use a category missing from CATEGORY_TRANSLATION, so no foreign key is declared for it."
+    },
+    {
+      "file": "raw/olist_orders_dataset.csv",
+      "table": "ORDERS",
+      "primaryKey": ["ORDER_ID"],
+      "foreignKeys": [{ "columns": ["CUSTOMER_ID"], "references": "CUSTOMERS", "refColumns": ["CUSTOMER_ID"] }],
+      "indexes": [["CUSTOMER_ID"], ["ORDER_PURCHASE_TIMESTAMP"], ["ORDER_STATUS"]]
+    },
+    {
+      "file": "raw/olist_order_items_dataset.csv",
+      "table": "ORDER_ITEMS",
+      "primaryKey": ["ORDER_ID", "ORDER_ITEM_ID"],
+      "foreignKeys": [
+        { "columns": ["ORDER_ID"], "references": "ORDERS", "refColumns": ["ORDER_ID"] },
+        { "columns": ["PRODUCT_ID"], "references": "PRODUCTS", "refColumns": ["PRODUCT_ID"] },
+        { "columns": ["SELLER_ID"], "references": "SELLERS", "refColumns": ["SELLER_ID"] }
+      ],
+      "indexes": [["PRODUCT_ID"], ["SELLER_ID"]]
+    },
+    {
+      "file": "raw/olist_order_payments_dataset.csv",
+      "table": "ORDER_PAYMENTS",
+      "primaryKey": ["ORDER_ID", "PAYMENT_SEQUENTIAL"],
+      "foreignKeys": [{ "columns": ["ORDER_ID"], "references": "ORDERS", "refColumns": ["ORDER_ID"] }]
+    },
+    {
+      "file": "raw/olist_order_reviews_dataset.csv",
+      "table": "ORDER_REVIEWS",
+      "primaryKey": ["REVIEW_ID", "ORDER_ID"],
+      "foreignKeys": [{ "columns": ["ORDER_ID"], "references": "ORDERS", "refColumns": ["ORDER_ID"] }],
+      "indexes": [["ORDER_ID"]],
+      "notes": "REVIEW_ID alone is not unique (814 ids appear on two orders); the key is (REVIEW_ID, ORDER_ID)."
+    },
+    {
+      "file": "raw/olist_geolocation_dataset.csv",
+      "table": "GEOLOCATION",
+      "indexes": [["GEOLOCATION_ZIP_CODE_PREFIX"]],
+      "notes": "No natural key: zip prefixes repeat with many coordinates."
+    }
+  ]
+}

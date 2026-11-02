@@ -56,6 +56,13 @@ export default defineNuxtConfig({
       maxRows: 100000000,
       maxConcurrentJobs: 2,
       maxExtensionTables: 300,
+      maxUploadMb: 512,
+    },
+    datasets: {
+      // Folder scanned for ready-made files (CSV/TSV/XLSX) and bundle manifests (*.bundle.json).
+      dir: './datasets',
+      // Uploaded files are stored here, outside the repository.
+      uploadDir: './.data/uploads',
     },
     public: {
       appName: 'OracleDB Data Lab',

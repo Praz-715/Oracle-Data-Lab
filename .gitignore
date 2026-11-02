@@ -26,3 +26,6 @@ Thumbs.db
 coverage
 playwright-report
 test-results
+
+# Raw dataset files (large; keep local)
+datasets/raw/

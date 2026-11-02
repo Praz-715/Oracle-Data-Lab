@@ -86,7 +86,7 @@ export interface DbEnvironment {
   unavailable: Record<string, string>
 }
 
-export type JobType = 'schema-apply' | 'data-generate' | 'quality' | 'benchmark' | 'cleanup'
+export type JobType = 'schema-apply' | 'data-generate' | 'quality' | 'benchmark' | 'cleanup' | 'import' | 'import-bundle' | 'import-undo'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
 
 export interface JobProgress {
@@ -281,7 +281,146 @@ export interface BenchmarkEnvironment {
   indexes: { table: string; index: string; columns: string }[]
 }
 
-export type AssessmentSeverity = 'critical' | 'warning' | 'info' | 'ok' | 'na'
+// ---------------------------------------------------------------------------------------------
+// Data sources & import
+// ---------------------------------------------------------------------------------------------
+
+export type SourceFormat = 'csv' | 'xlsx'
+
+/** A file the importer can read: found in the datasets folder or uploaded through the UI. */
+export interface DataSource {
+  id: string
+  name: string
+  origin: 'folder' | 'upload'
+  format: SourceFormat
+  /** Display path relative to the datasets folder (folder sources) or the original file name. */
+  path: string
+  sizeBytes: number
+  modifiedAt: string
+  /** Cached profile summary, when the file has been profiled since it last changed. */
+  rows?: number | null
+  columns?: number | null
+}
+
+export type ColumnKind = 'integer' | 'decimal' | 'date' | 'timestamp' | 'text' | 'empty'
+
+export interface ColumnProfile {
+  index: number
+  /** Header text (or COLn when the file has no header). */
+  header: string
+  /** Oracle-safe column name suggestion. */
+  name: string
+  kind: ColumnKind
+  /** Suggested Oracle type, e.g. NUMBER(10), VARCHAR2(40 CHAR), DATE, TIMESTAMP(3). */
+  oracleType: string
+  /** Oracle conversion mask for date/timestamp columns. */
+  dateMask: string | null
+  /** Values use a decimal comma (1.234,56). */
+  decimalComma: boolean
+  nonNull: number
+  nulls: number
+  distinct: number
+  distinctCapped: boolean
+  maxLength: number
+  maxBytes: number
+  min: string | null
+  max: string | null
+  samples: string[]
+  /** Text that looks numeric but must stay text (leading zeros, very long digit strings). */
+  keepAsText: boolean
+  /** Every non-null value is distinct (primary-key candidate). */
+  unique: boolean
+}
+
+export interface SourceProfile {
+  sourceId: string
+  sheet: string | null
+  sheets: string[]
+  delimiter: string | null
+  encoding: string
+  hasHeader: boolean
+  rows: number
+  columns: ColumnProfile[]
+  preview: (string | null)[][]
+  profiledAt: string
+  durationMs: number
+}
+
+export interface ImportColumn {
+  /** Source column index; null with `constant` set inserts a fixed value. */
+  source: number | null
+  target: string
+  /** Oracle type of the target column (used for CREATE TABLE and for conversion). */
+  type: string
+  dateMask?: string | null
+  decimalComma?: boolean
+  trim?: boolean
+  emptyAsNull?: boolean
+  constant?: string | null
+}
+
+export interface ImportConfig {
+  profileId: string
+  sourceId: string
+  sheet?: string | null
+  hasHeader: boolean
+  delimiter?: string | null
+  encoding?: string
+  schema: string
+  table: string
+  mode: 'create' | 'append'
+  columns: ImportColumn[]
+  primaryKey?: string[]
+  /** Adds/fills DL_IMPORT_ID so the rows of this import can be removed precisely. */
+  tagRows: boolean
+  batchSize: number
+  /** Stop the job when more rows than this are rejected. */
+  maxErrors: number
+  gatherStats: boolean
+}
+
+export interface ImportPlan {
+  schema: string
+  table: string
+  mode: 'create' | 'append'
+  statements: { kind: 'create' | 'constraint' | 'index' | 'stats'; sql: string }[]
+  insertSql: string
+  preview: { row: number; values: (string | null)[]; issues: string[] }[]
+  warnings: string[]
+  errors: string[]
+  totalRows: number | null
+}
+
+export interface ImportRejected {
+  row: number
+  error: string
+  values: (string | null)[]
+}
+
+export interface ImportResult {
+  schema: string
+  table: string
+  rowsRead: number
+  inserted: number
+  rejected: number
+  rejectedSamples: ImportRejected[]
+  tableCreated: boolean
+  constraints: { sql: string; status: 'ok' | 'failed'; error?: string }[]
+  seconds: number
+}
+
+/** Multi-file dataset pack described by a datasets/*.bundle.json manifest. */
+export interface DatasetBundle {
+  id: string
+  name: string
+  description: string
+  license: string | null
+  url: string | null
+  tables: { file: string; table: string; sourceId: string | null; sizeBytes: number | null; primaryKey: string[] }[]
+  missing: string[]
+}
+
+export type AssessmentSeverity ='critical' | 'warning' | 'info' | 'ok' | 'na'
 
 /** One health-check outcome of the database assessment. `na` = could not be checked (privilege/version). */
 export interface AssessmentFinding {
@@ -319,6 +458,7 @@ export interface LabSettings {
     maxRows: number
     maxConcurrentJobs: number
     maxExtensionTables: number
+    maxUploadMb: number
   }
   pool: { poolMax: number; poolMin: number; poolTimeout: number; callTimeoutMs: number }
   dataDir: string

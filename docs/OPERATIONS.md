@@ -129,6 +129,32 @@ consecutive samples. Verify licensing for your own environment.
 - For RAC-vs-single-instance or version comparisons, run the same scenario/data size on each target and
   compare in *History & compare*.
 
+## 7a. Data sources & imports
+
+- **Sources.** Files under `NUXT_DATASETS_DIR` (default `./datasets`, scanned recursively for
+  `.csv/.tsv/.txt/.xlsx`) are read-only and addressed by opaque ids. Uploads are streamed to
+  `NUXT_DATASETS_UPLOAD_DIR` (default `./.data/uploads`), limited by `NUXT_LIMITS_MAX_UPLOAD_MB`
+  (default 512). `datasets/raw/` is git-ignored.
+- **Profiling** scans the whole file once (≈60k rows/s for CSV) and is cached until the file changes:
+  delimiter and UTF-8/Latin-1 encoding are sniffed, BOMs and quoted newlines are handled, Excel date
+  cells are recognized from their number format. Type inference: integers → `NUMBER(p)`, decimals →
+  `NUMBER(p,s)` (decimal comma supported), dates → `DATE`/`TIMESTAMP(n)` with an Oracle mask
+  (ISO, `DD/MM/YYYY`, `MM/DD/YYYY`, `-`/`.` separators), anything with leading zeros or > 38 digits
+  stays text, text → `VARCHAR2(n CHAR)` (exact length for fixed-width codes) or `CLOB` beyond 4000 bytes.
+- **Imports** only create new tables or append — never truncate or replace. Values are bound as strings
+  and converted by Oracle (`TO_NUMBER`, `TO_DATE(…, mask)`) with `NLS_NUMERIC_CHARACTERS='.,'`, so the
+  first rows can be validated in Oracle before running, and rejected rows carry the real ORA error
+  (`executeMany` with `batchErrors`). The job stops once rejects exceed the configured limit; committed
+  rows stay. Resume continues after the last committed batch and refuses if the file changed.
+- **Undo:** with row tagging on (default), *Delete imported rows* removes `DL_IMPORT_ID = <job id>`;
+  imports that created a table (and bundle imports) can drop what they created. Both require typing
+  the table name / prefix.
+- **Bundles:** a `datasets/<name>.bundle.json` manifest lists files, table names, column renames/types,
+  primary keys, foreign keys and indexes; keys and statistics are created after all tables are loaded.
+  The included **Olist** manifest (CC BY-NC-SA 4.0) loads ~1.55M rows into 9 related tables.
+- In `npm run dev`, editing server files restarts Nitro and marks a running import *interrupted* —
+  resume it from Job History or the Import Manager.
+
 ## 8. Troubleshooting
 
 | Symptom | Likely cause / fix |

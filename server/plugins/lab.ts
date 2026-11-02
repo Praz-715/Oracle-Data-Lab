@@ -6,6 +6,7 @@ import '../services/generator'
 import '../services/quality'
 import '../services/benchmark'
 import '../services/cleanup'
+import '../services/importer'
 
 export default defineNitroPlugin(async (nitroApp) => {
   try {

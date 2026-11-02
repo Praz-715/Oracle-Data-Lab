@@ -44,7 +44,9 @@ Keep it on a trusted network — the app has no user login of its own (see OPERA
 | Visual analytics | ✅ | Revenue, orders, channels, categories, status, weekday, top customers from the lab tables |
 | RAC / Data Guard / RMAN | ✅ read-only | Observability panels; failover/switchover/restore drills intentionally not executed yet |
 | Job history & cleanup manager | ✅ | Persistent jobs, SSE progress, cancel/resume, cleanup by job id / run id / prefix with typed confirmation, audit log |
-| Dataset sources, import manager, Prometheus/Grafana, schema compare, workload replay, multiversion lab | 🗺️ planned | Shown as *planned* in the UI, never simulated |
+| Dataset sources | ✅ | Files in `datasets/` + CSV/TSV/XLSX uploads (streamed, size-limited); full-file profiling with Oracle type inference (numbers, decimal comma, date masks, codes with leading zeros kept as text, unique-key candidates); preview; bundle manifests (`datasets/*.bundle.json`) such as the Olist e-commerce pack with PKs, FKs and indexes |
+| Import manager | ✅ | Create a table from inferred types or append to an existing one; column mapping, type/mask/decimal-comma/constant per column; first rows validated by Oracle before running; resumable job with array binds, per-row rejects (ORA error + values), rows tagged `DL_IMPORT_ID`, PK + statistics after load; undo by deleting tagged rows or dropping created tables (typed confirmation) |
+| Prometheus/Grafana, schema compare, workload replay, multiversion lab | 🗺️ planned | Shown as *planned* in the UI, never simulated |
 
 ## Scripts
 
