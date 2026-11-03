@@ -24,6 +24,8 @@ export interface PlanRow {
 export interface TableInfo {
   owner: string
   table: string
+  /** False when the dictionary view used does not show the table (no privilege on it). */
+  visible?: boolean
   rows: number | null
   ndv: Record<string, number | null>
   indexes: { name: string; columns: string[] }[]

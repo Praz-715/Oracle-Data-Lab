@@ -54,6 +54,7 @@ const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TAB
 // Index recommendations from the real cursor plans of the top SQL (advice only; test in the Playground).
 const adviceTop = ref(30)
 const advice = useLoader<SqlIndexReport>(() => (activeId.value && tab.value === 'indexes' ? `/api/connections/${activeId.value}/tuning/index-advice` : null), { query: () => ({ top: adviceTop.value }) })
+watch(activeId, () => (advice.data.value = null))
 const adviceOpen = ref<Set<string>>(new Set())
 function toggleAdvice(id: string) {
   const s = new Set(adviceOpen.value)

@@ -1,8 +1,9 @@
 import type { Connection } from 'oracledb'
 import type { AssessmentFinding, FixStep, Recommendation } from '../../shared/types/lab'
+import { SENSITIVE_PACKAGES } from '../assessment/packages'
 import { versionMajorOf } from '../database/environment'
 import { one, rows } from '../database/query'
-import { customGrantee, customOwner, customUser, fkNoIndexSql, inList, noPkSql, SENSITIVE_PACKAGES } from '../services/assessment'
+import { customGrantee, customOwner, customUser, fkNoIndexSql, inList, noPkSql } from '../services/assessment'
 import {
   addGroupsScript,
   diskGroupOf,
@@ -196,6 +197,12 @@ export function finish(f: AssessmentFinding, d: Draft): Recommendation {
 
 // --- shared fact readers ---------------------------------------------------------------------------
 
+/** Average redo bytes per day over the last 7 days (log switches × average log size). */
+async function redoPerDay(conn: Connection) {
+  const r = await one<{ D: number; B: number }>(conn, `SELECT (SELECT COUNT(*) FROM V$LOG_HISTORY WHERE FIRST_TIME > SYSDATE - 7) / 7 AS "D", (SELECT AVG(BYTES) FROM V$LOG) AS "B" FROM DUAL`)
+  return n(r?.D) * n(r?.B)
+}
+
 async function redoGroups(conn: Connection): Promise<RedoGroup[]> {
   const r = await rows<{ G: number; T: number; B: number; M: number; S: string; F: string | null }>(
     conn,
@@ -237,8 +244,7 @@ const REDO_CHECK = `SELECT l.GROUP#, l.THREAD#, ROUND(l.BYTES / 1048576) AS MB, 
 const BUILDERS: Record<string, Builder> = {
   archivelog: async (c) => {
     const p = await params(c.conn, ['db_recovery_file_dest', 'log_archive_dest_1', 'log_archive_dest'])
-    const redo = await one<{ D: number; B: number }>(c.conn, `SELECT (SELECT COUNT(*) FROM V$LOG_HISTORY WHERE FIRST_TIME > SYSDATE - 7) / 7 AS "D", (SELECT AVG(BYTES) FROM V$LOG) AS "B" FROM DUAL`)
-    const perDay = n(redo?.D) * n(redo?.B)
+    const perDay = await redoPerDay(c.conn)
     const dest = p.db_recovery_file_dest || p.log_archive_dest_1 || p.log_archive_dest
     const steps: FixStep[] = []
     if (!dest)
@@ -284,7 +290,7 @@ const BUILDERS: Record<string, Builder> = {
       prerequisites: ['A maintenance window.', 'A recent backup of the control file (RMAN: BACKUP CURRENT CONTROLFILE;).'],
       steps,
       verify: check('Both copies are in use', root(c), `SELECT NAME, STATUS FROM V$CONTROLFILE;\nSHOW PARAMETER control_files`),
-      rollback: sql('Go back to the single copy', root(c), `ALTER SYSTEM SET control_files = ${cur} SCOPE=SPFILE SID='*';\n${restart(c).kind === 'sql' ? restart(c).code : '-- then restart all instances with srvctl'}`),
+      rollback: sql('Go back to the single copy', root(c), `ALTER SYSTEM SET control_files = ${cur} SCOPE=SPFILE SID='*';\n${c.rac ? '-- then restart all instances with srvctl' : restart(c).code}`),
       basedOn: [`V$CONTROLFILE: ${files.join(', ')}`, p.spfile ? `Started with SPFILE ${p.spfile}` : 'Started with a text PFILE', ...(c.rac ? ['RAC: instances are stopped/started with srvctl'] : [])],
     }
   },
@@ -377,8 +383,7 @@ const BUILDERS: Record<string, Builder> = {
   fra: async (c) => {
     const u = await one<{ N: string; L: number; U: number; R: number }>(c.conn, `SELECT NAME AS "N", SPACE_LIMIT AS "L", SPACE_USED AS "U", SPACE_RECLAIMABLE AS "R" FROM V$RECOVERY_FILE_DEST`)
     if (!u?.N || !n(u.L)) {
-      const redo = await one<{ D: number; B: number }>(c.conn, `SELECT (SELECT COUNT(*) FROM V$LOG_HISTORY WHERE FIRST_TIME > SYSDATE - 7) / 7 AS "D", (SELECT AVG(BYTES) FROM V$LOG) AS "B" FROM DUAL`)
-      const perDay = n(redo?.D) * n(redo?.B)
+      const perDay = await redoPerDay(c.conn)
       return {
         why: 'There is no fast recovery area. It gives archived logs, RMAN backups and flashback logs one managed location where Oracle deletes what is obsolete by itself, and it is required for Flashback Database and guaranteed restore points.',
         impact: { risk: 'low', notes: ['Online. Archive destinations that are set explicitly (LOG_ARCHIVE_DEST_n) keep being used; USE_DB_RECOVERY_FILE_DEST is the default only when none is set.'] },
@@ -1077,8 +1082,7 @@ const BUILDERS: Record<string, Builder> = {
       return { why: 'Flashback Database requires Enterprise Edition.', steps: [], guidanceOnly: true, impact: { enterpriseOnly: true }, basedOn: ['Edition is not Enterprise'], prerequisites: ['Alternative: take an RMAN backup before risky changes.'] }
     const pre: string[] = []
     if (d?.L !== 'ARCHIVELOG') pre.push('ARCHIVELOG mode is required first (see "ARCHIVELOG mode").')
-    const redo = await one<{ D: number; B: number }>(c.conn, `SELECT (SELECT COUNT(*) FROM V$LOG_HISTORY WHERE FIRST_TIME > SYSDATE - 7) / 7 AS "D", (SELECT AVG(BYTES) FROM V$LOG) AS "B" FROM DUAL`)
-    const perDay = n(redo?.D) * n(redo?.B)
+    const perDay = await redoPerDay(c.conn)
     const steps: FixStep[] = []
     // Flashback logs can only live in the fast recovery area.
     if (!p.db_recovery_file_dest)

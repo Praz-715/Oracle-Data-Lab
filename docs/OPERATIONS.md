@@ -55,6 +55,12 @@ otherwise. Connected to a **PDB** you see that container: `V$SPPARAMETER` lists 
 empty — connect a profile to `CDB$ROOT` to assess the instance-wide SPFILE and limits.
 `DBA_FEATURE_USAGE_STATISTICS` is shown for information only; it is not a license determination.
 
+**Fix-it recommendations** read the same views as the assessment (`SELECT_CATALOG_ROLE`). A fix whose
+facts cannot be read (e.g. `DBA_USERS_WITH_DEFPWD`) is listed under *Advice not available* with the ORA
+code instead of being guessed. **Index recommendations** need `V$SQL` and `V$SQL_PLAN` (otherwise a 403
+with the grant to add) and use `DBA_TABLES` / `DBA_TAB_COL_STATISTICS` / `DBA_IND_COLUMNS` when visible;
+with only `ALL_*` views, tables the account cannot query are reported as *not visible* and get no advice.
+
 **Assessment history:** *History & compare → Save snapshot* stores the complete assessment (all sections)
 in `.data/lab` (a few hundred KB each). Any two snapshots can be compared — the same database over time
 (before/after a patch or change) or two different databases. Rows are matched by key per area; changes
@@ -194,7 +200,13 @@ are issued. Monitoring uses `V$SYSSTAT`, `V$OSSTAT`, `V$SESSION`, `V$SYSTEM_EVEN
   before revoking DBA/ANY privileges on EE 12c+.
 - Downloads: a `.sql` runbook (first statement is `EXIT`, so running the whole file by accident does
   nothing; RMAN/shell lines are commented) and a standalone HTML page. Generating advice is recorded in
-  the audit log as `recommendations.generated`.
+  the audit log as `recommendations.generated`. Advice is computed live on every request (it must match
+  the database now) and is not stored; saved assessment snapshots and the audit log persist in `.data/lab`.
+- **Tested against:** Oracle AI Database 26ai (23.26) single instance, CDB with a PDB, Enterprise
+  Edition — every builder's fact queries were run there, including for checks that pass. 11g/12c/19c,
+  non-CDB, RAC and Standard Edition paths (no `COMMON` columns, `srvctl` steps, no `ONLINE` operations,
+  no Privilege Analysis) are chosen from the version/edition/instance count but have not been run against
+  such databases yet.
 
 ## 7a. Data sources & imports
 

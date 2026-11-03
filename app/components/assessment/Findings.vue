@@ -8,13 +8,6 @@ import type { AssessmentFinding, AssessmentSeverity } from '~~/shared/types/lab'
  */
 const props = defineProps<{ findings: AssessmentFinding[]; compact?: boolean; limit?: number; profileId?: string | null }>()
 
-const SEV: Record<AssessmentSeverity, { label: string; tone: string; icon: string }> = {
-  critical: { label: 'Critical', tone: 'bad', icon: 'lucide:octagon-alert' },
-  warning: { label: 'Warning', tone: 'warn', icon: 'lucide:triangle-alert' },
-  info: { label: 'Info', tone: 'info', icon: 'lucide:info' },
-  ok: { label: 'OK', tone: 'ok', icon: 'lucide:circle-check' },
-  na: { label: 'n/a', tone: '', icon: 'lucide:circle-minus' },
-}
 const ORDER: AssessmentSeverity[] = ['critical', 'warning', 'info', 'ok', 'na']
 
 const severity = ref<AssessmentSeverity | 'all' | 'issues'>('issues')
@@ -52,7 +45,7 @@ function toggle(id: string) {
     <div v-if="!compact" class="row between toolbar">
       <div class="seg" role="group" aria-label="Filter by severity">
         <button :aria-pressed="severity === 'issues'" @click="severity = 'issues'">Issues · {{ counts.critical + counts.warning + counts.info }}</button>
-        <button v-for="s in ORDER" :key="s" :aria-pressed="severity === s" @click="severity = s">{{ SEV[s].label }} · {{ counts[s] }}</button>
+        <button v-for="s in ORDER" :key="s" :aria-pressed="severity === s" @click="severity = s">{{ SEVERITY[s].label }} · {{ counts[s] }}</button>
         <button :aria-pressed="severity === 'all'" @click="severity = 'all'">All · {{ findings.length }}</button>
       </div>
       <select v-model="category" class="input" style="width: 180px" aria-label="Category">
@@ -64,7 +57,7 @@ function toggle(id: string) {
     <p v-if="!shown.length" class="subtle empty">{{ compact ? 'No critical or warning findings.' : 'No findings match this filter.' }}</p>
     <ul class="list">
       <li v-for="f in shown" :key="f.id" class="item" :class="f.severity">
-        <span class="badge sev" :class="SEV[f.severity].tone"><Icon :name="SEV[f.severity].icon" size="12" />{{ SEV[f.severity].label }}</span>
+        <span class="badge sev" :class="SEVERITY[f.severity].tone"><Icon :name="SEVERITY[f.severity].icon" size="12" />{{ SEVERITY[f.severity].label }}</span>
         <div class="body">
           <div class="title">
             <strong>{{ f.title }}</strong>

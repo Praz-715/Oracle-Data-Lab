@@ -57,8 +57,12 @@ const counts = computed(() => okData<Record<string, number | null>>('summary', '
 // ---- fix-it plan (advice only: the server builds scripts, nothing is executed) ----
 const planWanted = ref(false)
 watch(tab, (t) => t === 'plan' && (planWanted.value = true))
-watch(activeId, () => (planWanted.value = tab.value === 'plan'))
 const plan = useLoader<RemediationPlan>(() => (activeId.value && planWanted.value ? `/api/connections/${activeId.value}/recommendations` : null))
+// Another database: never show the previous one's plan, not even while the new one loads.
+watch(activeId, () => {
+  plan.data.value = null
+  planWanted.value = tab.value === 'plan'
+})
 const planOpen = ref<Set<string>>(new Set())
 function togglePlan(id: string) {
   const s = new Set(planOpen.value)
@@ -79,7 +83,6 @@ async function downloadPlan(format: 'sql' | 'html') {
     planDownloading.value = null
   }
 }
-const SEV_BADGE = { critical: { tone: 'bad', icon: 'lucide:octagon-alert' }, warning: { tone: 'warn', icon: 'lucide:triangle-alert' }, info: { tone: 'info', icon: 'lucide:info' }, ok: { tone: 'ok', icon: 'lucide:circle-check' }, na: { tone: '', icon: 'lucide:circle-minus' } } as const
 
 // ---- history & compare ----
 const historyScope = ref<'profile' | 'all'>('profile')
@@ -152,18 +155,7 @@ async function exportReport(format: 'html' | 'json') {
   if (!activeId.value) return
   exporting.value = format
   try {
-    const res = await fetch(`/api/connections/${activeId.value}/assessment-report?format=${format}`)
-    if (!res.ok) {
-      const body = await res.json().catch(() => null)
-      throw new Error(body?.statusMessage || body?.message || `HTTP ${res.status}`)
-    }
-    const blob = await res.blob()
-    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `assessment.${format}`
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = name
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+    const name = await downloadFile(`/api/connections/${activeId.value}/assessment-report?format=${format}`, `assessment.${format}`)
     push({ tone: 'ok', title: 'Assessment report downloaded', detail: name })
   } catch (err) {
     push({ tone: 'bad', title: 'Export failed', detail: (err as Error).message })
@@ -1042,7 +1034,7 @@ const switchSeries = computed(() => {
                 <li v-for="r in plan.data.value.recommendations" :key="r.findingId">
                   <button class="plan-row" :aria-expanded="planOpen.has(r.findingId)" @click="togglePlan(r.findingId)">
                     <Icon :name="planOpen.has(r.findingId) ? 'lucide:chevron-down' : 'lucide:chevron-right'" size="14" />
-                    <span class="badge sev" :class="SEV_BADGE[r.severity].tone"><Icon :name="SEV_BADGE[r.severity].icon" size="12" />{{ r.severity }}</span>
+                    <span class="badge sev" :class="SEVERITY[r.severity].tone"><Icon :name="SEVERITY[r.severity].icon" size="12" />{{ SEVERITY[r.severity].label }}</span>
                     <strong>{{ r.title }}</strong>
                     <span class="subtle">{{ r.category }}</span>
                     <span class="plan-tags subtle">

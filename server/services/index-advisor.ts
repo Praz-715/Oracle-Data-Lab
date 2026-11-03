@@ -66,16 +66,20 @@ async function explainRows(conn: Connection, sql: string): Promise<ExplainOut> {
   return { rows: r, text, cost: r[0]?.cost ?? null, planHash: Number(/Plan hash value: (\d+)/.exec(text)?.[1] ?? 0) || null }
 }
 
-export async function tableInfos(conn: Connection, plan: PlanRow[]): Promise<Map<string, TableInfo>> {
+/**
+ * Row counts, column NDVs and existing indexes of the tables a plan reads. ALL_* views show only
+ * tables the account can query; pass `dict: 'DBA'` (SELECT_CATALOG_ROLE) to see every schema.
+ */
+export async function tableInfos(conn: Connection, plan: PlanRow[], dict: 'ALL' | 'DBA' = 'ALL'): Promise<Map<string, TableInfo>> {
   const tables = new Map<string, TableInfo>()
   const keys = [...new Set(plan.filter((r) => r.operation === 'TABLE ACCESS' && r.owner && r.object).map((r) => `${r.owner}.${r.object}`))]
   for (const k of keys) {
     const [owner, table] = k.split('.') as [string, string]
-    const t = await one<{ N: number | null }>(conn, `SELECT NUM_ROWS AS "N" FROM ALL_TABLES WHERE OWNER = :o AND TABLE_NAME = :t`, { o: owner, t: table })
-    const cols = await rows<{ C: string; D: number | null }>(conn, `SELECT COLUMN_NAME AS "C", NUM_DISTINCT AS "D" FROM ALL_TAB_COL_STATISTICS WHERE OWNER = :o AND TABLE_NAME = :t`, { o: owner, t: table }).catch(() => [])
+    const t = await one<{ N: number | null }>(conn, `SELECT NUM_ROWS AS "N" FROM ${dict}_TABLES WHERE OWNER = :o AND TABLE_NAME = :t`, { o: owner, t: table })
+    const cols = await rows<{ C: string; D: number | null }>(conn, `SELECT COLUMN_NAME AS "C", NUM_DISTINCT AS "D" FROM ${dict}_TAB_COL_STATISTICS WHERE OWNER = :o AND TABLE_NAME = :t`, { o: owner, t: table }).catch(() => [])
     const ix = await rows<{ I: string; C: string }>(
       conn,
-      `SELECT INDEX_NAME AS "I", COLUMN_NAME AS "C" FROM ALL_IND_COLUMNS WHERE TABLE_OWNER = :o AND TABLE_NAME = :t ORDER BY INDEX_NAME, COLUMN_POSITION`,
+      `SELECT INDEX_NAME AS "I", COLUMN_NAME AS "C" FROM ${dict}_IND_COLUMNS WHERE TABLE_OWNER = :o AND TABLE_NAME = :t ORDER BY INDEX_NAME, COLUMN_POSITION`,
       { o: owner, t: table },
     )
     const byIx = new Map<string, string[]>()
@@ -83,6 +87,7 @@ export async function tableInfos(conn: Connection, plan: PlanRow[]): Promise<Map
     tables.set(k, {
       owner,
       table,
+      visible: !!t,
       rows: t?.N != null ? Number(t.N) : null,
       ndv: Object.fromEntries(cols.map((c) => [c.C, c.D == null ? null : Number(c.D)])),
       indexes: [...byIx.entries()].map(([name, columns]) => ({ name, columns })),
@@ -100,7 +105,7 @@ export async function analyzeSql(input: z.infer<typeof analyzeSchema>): Promise<
         const ex = await explainRows(conn, sql)
         const tables = await tableInfos(conn, ex.rows)
         const advice = buildAdvice(ex.rows, tables)
-        const stale = [...tables.values()].filter((t) => t.rows == null)
+        const stale = [...tables.values()].filter((t) => t.visible !== false && t.rows == null)
         const notes = [...advice.notes]
         for (const t of stale) notes.push({ severity: 'warning', table: `${t.owner}.${t.table}`, text: `${t.table} has no optimizer statistics — estimates are guesses. Gather them first: EXEC DBMS_STATS.GATHER_TABLE_STATS('${t.owner}', '${t.table}').` })
         return { planText: ex.text, totalCost: ex.cost, fullScans: advice.fullScans, candidates: advice.candidates, notes }

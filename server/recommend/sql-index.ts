@@ -2,7 +2,7 @@ import type { Connection } from 'oracledb'
 import type { IndexCandidate, SqlIndexAdvice, SqlIndexReport, SqlRef } from '../../shared/types/lab'
 import { withConnection } from '../database/driver'
 import { versionMajorOf } from '../database/environment'
-import { oracleErrorInfo } from '../database/errors'
+import { isUnavailableError, oracleErrorInfo } from '../database/errors'
 import { one, rows } from '../database/query'
 import { customUser } from '../services/assessment'
 import { tableInfos } from '../services/index-advisor'
@@ -84,20 +84,30 @@ export async function sqlIndexReport(profileId: string, top = 30): Promise<SqlIn
     async (conn) => {
       const users = await appUsers(conn)
       const filter = sqlFilter(users.sql)
-      const total = Number((await one<{ E: number }>(conn, `SELECT SUM(s.ELAPSED_TIME) AS "E" FROM V$SQL s WHERE ${filter}`))?.E ?? 0)
-      const list = await rows<{ sqlId: string; planHash: number; child: number; execs: number; elapsed: number; gets: number; schema: string; text: string }>(
-        conn,
-        `SELECT * FROM (
-           SELECT s.SQL_ID AS "sqlId",
-                  MAX(s.PLAN_HASH_VALUE) KEEP (DENSE_RANK LAST ORDER BY s.EXECUTIONS) AS "planHash",
-                  MAX(s.CHILD_NUMBER) KEEP (DENSE_RANK LAST ORDER BY s.EXECUTIONS) AS "child",
-                  SUM(s.EXECUTIONS) AS "execs", SUM(s.ELAPSED_TIME) AS "elapsed", SUM(s.BUFFER_GETS) AS "gets",
-                  MAX(s.PARSING_SCHEMA_NAME) AS "schema", MAX(DBMS_LOB.SUBSTR(s.SQL_FULLTEXT, 2000, 1)) AS "text"
-             FROM V$SQL s WHERE ${filter}
-            GROUP BY s.SQL_ID ORDER BY SUM(s.ELAPSED_TIME) DESC)
-          WHERE ROWNUM <= :n`,
-        { n: top },
-      )
+      // DBA_* (SELECT_CATALOG_ROLE) sees every schema's statistics; ALL_* only tables this account may query.
+      const dict = (await one(conn, 'SELECT 1 AS "X" FROM DBA_TABLES WHERE ROWNUM = 1').then(() => true, () => false)) ? 'DBA' : 'ALL'
+      let total: number
+      let list:{ sqlId: string; planHash: number; child: number; execs: number; elapsed: number; gets: number; schema: string; text: string }[]
+      try {
+        total = Number((await one<{ E: number }>(conn, `SELECT SUM(s.ELAPSED_TIME) AS "E" FROM V$SQL s WHERE ${filter}`))?.E ?? 0)
+        list = await rows(
+          conn,
+          `SELECT * FROM (
+             SELECT s.SQL_ID AS "sqlId",
+                    MAX(s.PLAN_HASH_VALUE) KEEP (DENSE_RANK LAST ORDER BY s.EXECUTIONS) AS "planHash",
+                    MAX(s.CHILD_NUMBER) KEEP (DENSE_RANK LAST ORDER BY s.EXECUTIONS) AS "child",
+                    SUM(s.EXECUTIONS) AS "execs", SUM(s.ELAPSED_TIME) AS "elapsed", SUM(s.BUFFER_GETS) AS "gets",
+                    MAX(s.PARSING_SCHEMA_NAME) AS "schema", MAX(DBMS_LOB.SUBSTR(s.SQL_FULLTEXT, 2000, 1)) AS "text"
+               FROM V$SQL s WHERE ${filter}
+              GROUP BY s.SQL_ID ORDER BY SUM(s.ELAPSED_TIME) DESC)
+            WHERE ROWNUM <= :n`,
+          { n: top },
+        )
+      } catch (err) {
+        if (!isUnavailableError(err)) throw err
+        const i = oracleErrorInfo(err)
+        throw createError({ statusCode: 403, statusMessage: `${i.code}: this account cannot read the shared pool — needs SELECT on V$SQL and V$SQL_PLAN (SELECT_CATALOG_ROLE, see sql/admin/02_create_monitor_user.sql).` })
+      }
 
       const cache = new Map<string, TableInfo>()
       const items: { sql: SqlRef; candidates: IndexCandidate[] }[] = []
@@ -129,9 +139,10 @@ export async function sqlIndexReport(profileId: string, top = 30): Promise<SqlIn
             continue
           }
           const missing = plan.filter((r) => r.owner && r.object && !cache.has(`${r.owner}.${r.object}`))
-          if (missing.length) for (const [k, v] of await tableInfos(conn, missing)) cache.set(k, v)
+          if (missing.length) for (const [k, v] of await tableInfos(conn, missing, dict)) cache.set(k, v)
           const advice = buildAdvice(plan, cache)
-          items.push({ sql: ref, candidates: advice.candidates.filter((c) => users.set.has(c.owner)) })
+          // No advice for tables whose statistics this account cannot see: it would be a guess.
+          items.push({ sql: ref, candidates: advice.candidates.filter((c) => users.set.has(c.owner) && cache.get(`${c.owner}.${c.table}`)?.visible !== false) })
           for (const n of advice.notes) {
             if (n.table && !users.set.has(n.table.split('.')[0]!)) continue
             const k = `${n.table}|${n.text}`
@@ -140,12 +151,21 @@ export async function sqlIndexReport(profileId: string, top = 30): Promise<SqlIn
             notes.push({ ...n, sqlId: s.sqlId })
           }
           for (const t of new Set(plan.filter((r) => r.operation === 'TABLE ACCESS' && r.owner && users.set.has(r.owner)).map((r) => `${r.owner}.${r.object}`))) {
-            if (cache.get(t)?.rows != null) continue
-            const k = `${t}|nostats`
+            const info = cache.get(t)
+            if (info?.rows != null) continue
+            const hidden = info?.visible === false
+            const k = `${t}|${hidden ? 'hidden' : 'nostats'}`
             if (seenNote.has(k)) continue
             seenNote.add(k)
             const [o, tb] = t.split('.')
-            notes.push({ severity: 'warning', table: t, sqlId: s.sqlId, text: `${t} has no optimizer statistics, so plan estimates are guesses — gather them first: EXEC DBMS_STATS.GATHER_TABLE_STATS('${o}', '${tb}').` })
+            notes.push({
+              severity: 'warning',
+              table: t,
+              sqlId: s.sqlId,
+              text: hidden
+                ? `${t} is not visible to this account (${dict}_TABLES), so it was not analyzed — grant SELECT_CATALOG_ROLE to see every schema's statistics.`
+                : `${t} has no optimizer statistics, so plan estimates are guesses — gather them first: EXEC DBMS_STATS.GATHER_TABLE_STATS('${o}', '${tb}').`,
+            })
           }
         } catch (err) {
           const i = oracleErrorInfo(err)

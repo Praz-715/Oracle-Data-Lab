@@ -1,6 +1,8 @@
 // Pure script builders for remediation advice. Inputs are facts read from the database; outputs
 // are SQL/RMAN text the DBA reviews and runs. Nothing here executes anything.
 
+import { NETWORK_FILE_PACKAGES } from '../assessment/packages'
+
 export const GiB = 1024 ** 3
 const MiB = 1024 ** 2
 
@@ -181,7 +183,6 @@ export interface PublicPackageFact {
   dependents: string[]
 }
 
-export const NETWORK_FILE = new Set(['UTL_FILE', 'UTL_HTTP', 'UTL_TCP', 'UTL_SMTP', 'UTL_INADDR', 'UTL_MAIL', 'HTTPURITYPE', 'DBMS_LDAP', 'DBMS_BACKUP_RESTORE', 'DBMS_JAVA'])
 
 /**
  * Revoke EXECUTE from PUBLIC the safe way: first grant directly to every schema whose objects depend
@@ -190,9 +191,9 @@ export const NETWORK_FILE = new Set(['UTL_FILE', 'UTL_HTTP', 'UTL_TCP', 'UTL_SMT
  * revoked from CDB$ROOT with CONTAINER = ALL, so revokes are split by where they must run.
  */
 export function publicRevokeScript(pkgs: PublicPackageFact[]) {
-  const sorted = [...pkgs].sort((a, b) => Number(NETWORK_FILE.has(b.pkg)) - Number(NETWORK_FILE.has(a.pkg)) || a.pkg.localeCompare(b.pkg))
-  const c = (p: PublicPackageFact) => (NETWORK_FILE.has(p.pkg) ? '' : '-- ')
-  const label = (p: PublicPackageFact) => `-- ${p.pkg}${NETWORK_FILE.has(p.pkg) ? ' (network / file access)' : ' (widely used: uncomment only after testing your applications)'}`
+  const sorted = [...pkgs].sort((a, b) => Number(NETWORK_FILE_PACKAGES.has(b.pkg)) - Number(NETWORK_FILE_PACKAGES.has(a.pkg)) || a.pkg.localeCompare(b.pkg))
+  const c = (p: PublicPackageFact) => (NETWORK_FILE_PACKAGES.has(p.pkg) ? '' : '-- ')
+  const label = (p: PublicPackageFact) => `-- ${p.pkg}${NETWORK_FILE_PACKAGES.has(p.pkg) ? ' (network / file access)' : ' (widely used: uncomment only after testing your applications)'}`
   const grants = sorted
     .filter((p) => p.dependents.length)
     .map((p) => [label(p), ...p.dependents.map((d) => `${c(p)}GRANT EXECUTE ON SYS.${p.pkg} TO ${qi(d)};`)].join('\n'))

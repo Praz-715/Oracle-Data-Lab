@@ -1,5 +1,6 @@
 import type { Connection } from 'oracledb'
 import type { AssessmentFinding, AssessmentSection, AssessmentSeverity } from '../../shared/types/lab'
+import { NETWORK_FILE_PACKAGES, SENSITIVE_PACKAGES } from '../assessment/packages'
 import { withConnection } from '../database/driver'
 import { versionMajorOf } from '../database/environment'
 import { oracleErrorInfo } from '../database/errors'
@@ -47,13 +48,6 @@ export function customGrantee(major: number, col: string) {
     : `${col} NOT IN (${inList(ORACLE_SCHEMAS_11G)}) AND ${col} NOT IN (${inList(ORACLE_ROLES_11G)})`
 }
 
-/** Executable PL/SQL packages that CIS benchmarks say PUBLIC should not have EXECUTE on. */
-export const SENSITIVE_PACKAGES = [
-  'UTL_FILE', 'UTL_HTTP', 'UTL_TCP', 'UTL_SMTP', 'UTL_INADDR', 'UTL_MAIL', 'UTL_DBWS', 'UTL_ORAMTS', 'HTTPURITYPE', 'DBMS_LDAP',
-  'DBMS_BACKUP_RESTORE', 'DBMS_JAVA', 'DBMS_JAVA_TEST', 'DBMS_ADVISOR', 'DBMS_CRYPTO', 'DBMS_JOB', 'DBMS_LOB',
-  'DBMS_OBFUSCATION_TOOLKIT', 'DBMS_SCHEDULER', 'DBMS_SQL', 'DBMS_XMLGEN', 'DBMS_XMLQUERY',
-]
-const NETWORK_FILE_PACKAGES = new Set(['UTL_FILE', 'UTL_HTTP', 'UTL_TCP', 'UTL_SMTP', 'UTL_INADDR', 'UTL_MAIL', 'HTTPURITYPE', 'DBMS_LDAP', 'DBMS_BACKUP_RESTORE', 'DBMS_JAVA'])
 
 const POWERFUL_ROLES = ['DBA', 'IMP_FULL_DATABASE', 'EXP_FULL_DATABASE', 'DATAPUMP_EXP_FULL_DATABASE', 'DATAPUMP_IMP_FULL_DATABASE', 'SELECT_CATALOG_ROLE', 'EXECUTE_CATALOG_ROLE', 'DELETE_CATALOG_ROLE', 'SCHEDULER_ADMIN', 'AUDIT_ADMIN', 'PDB_DBA']
 const POWERFUL_PRIVS = [
