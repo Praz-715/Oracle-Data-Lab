@@ -4,8 +4,9 @@ import type { AssessmentFinding, AssessmentSeverity } from '~~/shared/types/lab'
 /**
  * Health-check results. Severity is always shown as icon + label (never color alone).
  * `compact` lists only the first `limit` findings without filters (Summary tab).
+ * With `profileId`, open issues get a "Fix it" button (advice only, see AssessmentFixIt).
  */
-const props = defineProps<{ findings: AssessmentFinding[]; compact?: boolean; limit?: number }>()
+const props = defineProps<{ findings: AssessmentFinding[]; compact?: boolean; limit?: number; profileId?: string | null }>()
 
 const SEV: Record<AssessmentSeverity, { label: string; tone: string; icon: string }> = {
   critical: { label: 'Critical', tone: 'bad', icon: 'lucide:octagon-alert' },
@@ -29,6 +30,14 @@ const shown = computed(() => {
       (!category.value || f.category === category.value),
   )
 })
+const fixing = ref<AssessmentFinding | null>(null)
+const fixOpen = ref(false)
+function fix(f: AssessmentFinding) {
+  fixing.value = f
+  fixOpen.value = true
+}
+const canFix = (f: AssessmentFinding) => !!props.profileId && !props.compact && ['critical', 'warning', 'info'].includes(f.severity)
+
 const open = ref<Set<string>>(new Set())
 function toggle(id: string) {
   const s = new Set(open.value)
@@ -60,6 +69,7 @@ function toggle(id: string) {
           <div class="title">
             <strong>{{ f.title }}</strong>
             <span class="subtle">{{ f.category }}</span>
+            <button v-if="canFix(f)" class="btn sm fix" @click="fix(f)"><Icon name="lucide:wrench" size="13" /> Fix it</button>
           </div>
           <div class="detail">{{ f.detail }}</div>
           <div v-if="f.recommendation && !compact" class="rec"><Icon name="lucide:corner-down-right" size="12" /> {{ f.recommendation }}</div>
@@ -75,6 +85,7 @@ function toggle(id: string) {
         </div>
       </li>
     </ul>
+    <AssessmentFixIt v-if="profileId" v-model="fixOpen" :profile-id="profileId" :finding="fixing" />
   </div>
 </template>
 
@@ -113,6 +124,9 @@ function toggle(id: string) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 10px;
+}
+.fix {
+  margin-left: auto;
 }
 .detail {
   color: var(--text-2);

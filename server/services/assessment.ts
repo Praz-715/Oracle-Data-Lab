@@ -30,25 +30,25 @@ const ORACLE_ROLES_11G = [
   'CTXAPP', 'OLAP_DBA', 'OLAP_USER', 'OLAP_XS_ADMIN', 'WM_ADMIN_ROLE', 'SPATIAL_CSW_ADMIN', 'SPATIAL_WFS_ADMIN', 'MGMT_USER',
   'CSW_USR_ROLE', 'WFS_USR_ROLE', 'ADM_PARALLEL_EXECUTE_TASK', 'GATHER_SYSTEM_STATISTICS', 'DBFS_ROLE', 'CWM_USER', 'PLUSTRACE',
 ]
-const inList = (xs: string[]) => xs.map((x) => `'${x}'`).join(',')
+export const inList = (xs: string[]) => xs.map((x) => `'${x}'`).join(',')
 
 /** Condition on a DBA_USERS alias that is true for application (non Oracle-maintained) users. */
-function customUser(major: number, a: string) {
+export function customUser(major: number, a: string) {
   return major >= 12 ? `${a}.ORACLE_MAINTAINED = 'N'` : `${a}.USERNAME IS NOT NULL AND ${a}.USERNAME NOT IN (${inList(ORACLE_SCHEMAS_11G)})`
 }
 /** Condition on an owner/grantee column that is true for application schemas. */
-function customOwner(major: number, col: string) {
+export function customOwner(major: number, col: string) {
   return `EXISTS (SELECT 1 FROM DBA_USERS cu_ WHERE cu_.USERNAME = ${col} AND ${customUser(major, 'cu_')})`
 }
 /** Condition on a grantee column that excludes Oracle-maintained users and roles. */
-function customGrantee(major: number, col: string) {
+export function customGrantee(major: number, col: string) {
   return major >= 12
     ? `${col} NOT IN (SELECT USERNAME FROM DBA_USERS WHERE ORACLE_MAINTAINED = 'Y') AND ${col} NOT IN (SELECT ROLE FROM DBA_ROLES WHERE ORACLE_MAINTAINED = 'Y') AND ${col} <> 'PUBLIC'`
     : `${col} NOT IN (${inList(ORACLE_SCHEMAS_11G)}) AND ${col} NOT IN (${inList(ORACLE_ROLES_11G)})`
 }
 
 /** Executable PL/SQL packages that CIS benchmarks say PUBLIC should not have EXECUTE on. */
-const SENSITIVE_PACKAGES = [
+export const SENSITIVE_PACKAGES = [
   'UTL_FILE', 'UTL_HTTP', 'UTL_TCP', 'UTL_SMTP', 'UTL_INADDR', 'UTL_MAIL', 'UTL_DBWS', 'UTL_ORAMTS', 'HTTPURITYPE', 'DBMS_LDAP',
   'DBMS_BACKUP_RESTORE', 'DBMS_JAVA', 'DBMS_JAVA_TEST', 'DBMS_ADVISOR', 'DBMS_CRYPTO', 'DBMS_JOB', 'DBMS_LOB',
   'DBMS_OBFUSCATION_TOOLKIT', 'DBMS_SCHEDULER', 'DBMS_SQL', 'DBMS_XMLGEN', 'DBMS_XMLQUERY',
@@ -509,7 +509,7 @@ async function objects(conn: Connection): Promise<AssessmentSection> {
 }
 
 /** Application tables without a primary key; MV containers, external, temporary and IOT overflow tables excluded. */
-function noPkSql(major: number) {
+export function noPkSql(major: number) {
   // Anti-joins against pre-filtered sets: correlated NOT EXISTS on DBA_MVIEWS/DBA_EXTERNAL_TABLES is slow.
   return `SELECT t.OWNER AS "owner", t.TABLE_NAME AS "table", t.NUM_ROWS AS "numRows", t.PARTITIONED AS "partitioned"
             FROM DBA_TABLES t
@@ -523,7 +523,7 @@ function noPkSql(major: number) {
 }
 
 /** Foreign keys whose columns are not the leading columns (in any order) of some index on the child table. */
-function fkNoIndexSql(major: number) {
+export function fkNoIndexSql(major: number) {
   return `SELECT c.OWNER AS "owner", c.TABLE_NAME AS "table", c.CONSTRAINT_NAME AS "constraint", c.R_OWNER AS "refOwner",
                  (SELECT p.TABLE_NAME FROM DBA_CONSTRAINTS p WHERE p.OWNER = c.R_OWNER AND p.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME) AS "refTable",
                  (SELECT LISTAGG(x.COLUMN_NAME, ', ') WITHIN GROUP (ORDER BY x.POSITION) FROM DBA_CONS_COLUMNS x
@@ -543,7 +543,7 @@ function fkNoIndexSql(major: number) {
 }
 
 /** Unusable indexes and index (sub)partitions, flagged by whether the owner is Oracle-maintained. */
-function unusableSql(major: number) {
+export function unusableSql(major: number) {
   return `SELECT q.*, CASE WHEN ${customOwner(major, 'q."owner"')} THEN 'N' ELSE 'Y' END AS "oracleMaintained" FROM (
             SELECT OWNER AS "owner", INDEX_NAME AS "index", TABLE_NAME AS "table", NULL AS "partition", STATUS AS "status" FROM DBA_INDEXES WHERE STATUS = 'UNUSABLE'
             UNION ALL
@@ -1375,17 +1375,25 @@ async function findings(conn: Connection): Promise<AssessmentSection> {
   return { findings: await softPanel(() => runFindings(conn), CATALOG, `${CHECKS.length} automated checks. "n/a" = not checkable with this account or Oracle version.`) }
 }
 
-async function runFindings(conn: Connection): Promise<AssessmentFinding[]> {
+async function runCheckDef(conn: Connection, c: Check, major: number): Promise<AssessmentFinding> {
+  try {
+    return { id: c.id, category: c.category, title: c.title, ...(await c.run(conn, major)) }
+  } catch (err) {
+    const i = oracleErrorInfo(err)
+    return { id: c.id, category: c.category, title: c.title, severity: 'na', detail: `Not checked — ${i.code}: ${i.hint ?? i.message}` }
+  }
+}
+
+/** Runs one health check by id (null when the id is unknown). */
+export async function runCheck(conn: Connection, id: string): Promise<AssessmentFinding | null> {
+  const c = CHECKS.find((x) => x.id === id)
+  return c ? runCheckDef(conn, c, versionMajorOf(conn)) : null
+}
+
+export async function runFindings(conn: Connection): Promise<AssessmentFinding[]> {
   const major = versionMajorOf(conn)
   const out: AssessmentFinding[] = []
-  for (const c of CHECKS) {
-    try {
-      out.push({ id: c.id, category: c.category, title: c.title, ...(await c.run(conn, major)) })
-    } catch (err) {
-      const i = oracleErrorInfo(err)
-      out.push({ id: c.id, category: c.category, title: c.title, severity: 'na', detail: `Not checked — ${i.code}: ${i.hint ?? i.message}` })
-    }
-  }
+  for (const c of CHECKS) out.push(await runCheckDef(conn, c, major))
   const order: Record<AssessmentSeverity, number> = { critical: 0, warning: 1, info: 2, na: 3, ok: 4 }
   return out.sort((a, b) => order[a.severity] - order[b.severity])
 }

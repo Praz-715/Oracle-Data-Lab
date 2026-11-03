@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AssessmentDiff, AssessmentFinding, AssessmentSection, AssessmentSnapshotMeta } from '~~/shared/types/lab'
+import type { AssessmentDiff, AssessmentFinding, AssessmentSection, AssessmentSnapshotMeta, RemediationPlan } from '~~/shared/types/lab'
 
 useHead({ title: 'Database Assessment · OracleDB Data Lab' })
 const { activeId } = useActiveProfile()
@@ -22,10 +22,10 @@ const TABS = [
 ] as const
 type SectionId = (typeof TABS)[number]['id']
 
-const tab = ref<SectionId | 'history'>('summary')
+const tab = ref<SectionId | 'plan' | 'history'>('summary')
 // Sections load the first time their tab is opened and stay cached until Refresh.
 const visited = reactive(new Set<SectionId>(['summary', 'findings']))
-watch(tab, (t) => t !== 'history' && visited.add(t))
+watch(tab, (t) => t !== 'history' && t !== 'plan' && visited.add(t))
 const base = computed(() => (activeId.value ? `/api/connections/${activeId.value}/assessment` : null))
 function section(id: SectionId) {
   return useLoader<AssessmentSection>(() => (base.value && visited.has(id) ? `${base.value}/${id}` : null))
@@ -49,9 +49,37 @@ const issueCount = computed(() => findings.value.filter((f) => f.severity === 'c
 const sevCount = (s: AssessmentFinding['severity']) => findings.value.filter((f) => f.severity === s).length
 const tabs = computed(() => [
   ...TABS.map((t) => ({ ...t, count: t.id === 'findings' && findings.value.length ? issueCount.value : null })),
+  { id: 'plan', label: 'Fix-it plan', count: plan.data.value?.recommendations.length || null },
   { id: 'history', label: 'History & compare', count: snapshots.data.value?.length || null },
 ])
 const counts = computed(() => okData<Record<string, number | null>>('summary', 'counts'))
+
+// ---- fix-it plan (advice only: the server builds scripts, nothing is executed) ----
+const planWanted = ref(false)
+watch(tab, (t) => t === 'plan' && (planWanted.value = true))
+watch(activeId, () => (planWanted.value = tab.value === 'plan'))
+const plan = useLoader<RemediationPlan>(() => (activeId.value && planWanted.value ? `/api/connections/${activeId.value}/recommendations` : null))
+const planOpen = ref<Set<string>>(new Set())
+function togglePlan(id: string) {
+  const s = new Set(planOpen.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  planOpen.value = s
+}
+const planCount = (sev: AssessmentFinding['severity']) => plan.data.value?.recommendations.filter((r) => r.severity === sev).length ?? 0
+const planDownloading = ref<'sql' | 'html' | null>(null)
+async function downloadPlan(format: 'sql' | 'html') {
+  planDownloading.value = format
+  try {
+    const name = await downloadFile(`/api/connections/${activeId.value}/recommendations?format=${format}`, `remediation.${format}`)
+    push({ tone: 'ok', title: 'Remediation plan downloaded', detail: name })
+  } catch (err) {
+    push({ tone: 'bad', title: 'Download failed', detail: (err as Error).message })
+  } finally {
+    planDownloading.value = null
+  }
+}
+const SEV_BADGE = { critical: { tone: 'bad', icon: 'lucide:octagon-alert' }, warning: { tone: 'warn', icon: 'lucide:triangle-alert' }, info: { tone: 'info', icon: 'lucide:info' }, ok: { tone: 'ok', icon: 'lucide:circle-check' }, na: { tone: '', icon: 'lucide:circle-minus' } } as const
 
 // ---- history & compare ----
 const historyScope = ref<'profile' | 'all'>('profile')
@@ -279,7 +307,7 @@ const switchSeries = computed(() => {
 
         <!-- ================= Health checks ================= -->
         <AssessmentPanel v-else-if="tab === 'findings'" title="Health checks" icon="lucide:stethoscope" v-bind="bind('findings', 'findings')" :count="() => null">
-          <template #default="{ data }"><AssessmentFindings :findings="data" /></template>
+          <template #default="{ data }"><AssessmentFindings :findings="data" :profile-id="activeId" /></template>
         </AssessmentPanel>
 
         <!-- ================= Parameters ================= -->
@@ -984,6 +1012,62 @@ const switchSeries = computed(() => {
           </div>
         </template>
 
+        <!-- ================= Fix-it plan ================= -->
+        <template v-else-if="tab === 'plan'">
+          <div class="callout info">
+            <Icon name="lucide:shield-check" size="16" />
+            <span><strong>Recommendations only.</strong> Every open health check is re-run and turned into a script built from facts read from this database — where to run it, its impact, how to verify and how to undo it. The app never executes any of it.</span>
+          </div>
+          <UiCard title="Fix-it plan" icon="lucide:list-checks" flush>
+            <template #actions>
+              <button class="btn sm" :disabled="plan.loading.value" @click="plan.load()"><Icon name="lucide:refresh-cw" size="13" /> Regenerate</button>
+              <button class="btn sm" :disabled="!plan.data.value?.recommendations.length || !!planDownloading" @click="downloadPlan('html')">
+                <span v-if="planDownloading === 'html'" class="spin" aria-hidden="true" /><Icon v-else name="lucide:file-down" size="13" /> HTML
+              </button>
+              <button class="btn sm primary" :disabled="!plan.data.value?.recommendations.length || !!planDownloading" @click="downloadPlan('sql')">
+                <span v-if="planDownloading === 'sql'" class="spin" aria-hidden="true" /><Icon v-else name="lucide:file-code" size="13" /> Runbook .sql
+              </button>
+            </template>
+            <p v-if="plan.loading.value && !plan.data.value" class="subtle pad"><span class="spin" aria-hidden="true" /> Running {{ findings.length || 36 }} checks and reading the facts for each fix…</p>
+            <div v-else-if="plan.error.value" class="callout bad pad-m"><Icon name="lucide:circle-x" size="16" />{{ plan.error.value }}</div>
+            <template v-else-if="plan.data.value">
+              <div class="grid kpis pad">
+                <UiKpi label="Critical" icon="lucide:octagon-alert" :value="planCount('critical')" sub="with a fix" :tone="planCount('critical') ? 'bad' : 'ok'" />
+                <UiKpi label="Warning" icon="lucide:triangle-alert" :value="planCount('warning')" sub="with a fix" :tone="planCount('warning') ? 'warn' : 'ok'" />
+                <UiKpi label="Info" icon="lucide:info" :value="planCount('info')" sub="with a fix" tone="info" />
+                <UiKpi label="Need a restart" icon="lucide:power" :value="plan.data.value.recommendations.filter((r) => r.impact.restart).length" :sub="`${plan.data.value.clean} of ${plan.data.value.checked} checks passed`" />
+              </div>
+              <p v-if="!plan.data.value.recommendations.length" class="subtle pad">Nothing to fix — every health check passes.</p>
+              <ul class="plan-list">
+                <li v-for="r in plan.data.value.recommendations" :key="r.findingId">
+                  <button class="plan-row" :aria-expanded="planOpen.has(r.findingId)" @click="togglePlan(r.findingId)">
+                    <Icon :name="planOpen.has(r.findingId) ? 'lucide:chevron-down' : 'lucide:chevron-right'" size="14" />
+                    <span class="badge sev" :class="SEV_BADGE[r.severity].tone"><Icon :name="SEV_BADGE[r.severity].icon" size="12" />{{ r.severity }}</span>
+                    <strong>{{ r.title }}</strong>
+                    <span class="subtle">{{ r.category }}</span>
+                    <span class="plan-tags subtle">
+                      <span v-if="r.impact.restart"><Icon name="lucide:power" size="12" /> restart</span>
+                      <span>risk {{ r.impact.risk }}</span>
+                      <span v-if="r.guidanceOnly">guidance</span>
+                      <span v-else>{{ r.steps.length }} step(s)</span>
+                    </span>
+                  </button>
+                  <div v-if="planOpen.has(r.findingId)" class="plan-body"><AssessmentRecommendation :rec="r" /></div>
+                </li>
+              </ul>
+              <div v-if="plan.data.value.failed.length" class="callout warn pad-m">
+                <Icon name="lucide:circle-alert" size="16" />
+                <div>
+                  <strong>No advice for {{ plan.data.value.failed.length }} check(s)</strong>
+                  <ul class="plain-list">
+                    <li v-for="f in plan.data.value.failed" :key="f.findingId">{{ f.title }} — {{ f.reason }}</li>
+                  </ul>
+                </div>
+              </div>
+            </template>
+          </UiCard>
+        </template>
+
         <!-- ================= History & compare ================= -->
         <template v-else-if="tab === 'history'">
           <UiCard title="Snapshots" icon="lucide:history" flush>
@@ -1075,6 +1159,60 @@ const switchSeries = computed(() => {
 </template>
 
 <style scoped>
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.plan-list > li {
+  border-top: 1px solid var(--border);
+}
+.plan-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.plan-row:hover {
+  background: var(--bg-sunken);
+}
+.plan-row .sev::before {
+  display: none;
+}
+.plan-tags {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 12px;
+}
+.plan-tags span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.plan-body {
+  padding: 4px 14px 16px 38px;
+}
+.pad-m {
+  margin: 12px 14px;
+}
+.plain-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+@media (max-width: 600px) {
+  .plan-body {
+    padding-left: 14px;
+  }
+}
 .kv {
   display: grid;
   grid-template-columns: max-content 1fr;

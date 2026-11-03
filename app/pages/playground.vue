@@ -99,6 +99,7 @@ watch(
   [activeId, () => route.query.sqlId],
   async ([id, sqlId]) => {
     if (!id || typeof sqlId !== 'string') return
+    if (typeof route.query.schema === 'string') schema.value = route.query.schema
     try {
       const d = await api<any>(`/api/connections/${id}/sql/${sqlId}`)
       if (d.text?.status === 'ok' && d.text.data) sql.value = String(d.text.data)

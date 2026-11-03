@@ -170,6 +170,31 @@ are issued. Monitoring uses `V$SYSSTAT`, `V$OSSTAT`, `V$SESSION`, `V$SYSTEM_EVEN
   the statement 3× without and 3× with `OPTIMIZER_USE_INVISIBLE_INDEXES=TRUE` (fresh cursors, client
   statement cache bypassed) and reports cost, median time and logical reads. *Keep* makes it visible for
   everyone, *Drop* removes it; only advisor-created indexes can be changed from the app.
+- **Index recommendations** (SQL Tuning) apply the same heuristics to the *real* cursor plans of the top
+  application SQL in the shared pool (`V$SQL` by elapsed time, `V$SQL_PLAN` with predicates). Excluded:
+  Oracle-maintained parsing schemas, this app's own dictionary queries (benchmark and Playground SQL are
+  kept), and Oracle's recursive SQL (dynamic sampling, statistics gathering). Candidates are merged across
+  statements (an index on `(A, B)` also serves a candidate on `(A)`) and ranked by the share of SQL
+  elapsed time they could affect. Nothing is created: *Test in Playground* opens the statement in its
+  parsing schema, where the INVISIBLE test above measures it.
+
+## 7c. Fix-it recommendations
+
+- **Advice only — the app never executes it.** *Fix it* on a health check (Assessment → Health checks)
+  and the *Fix-it plan* tab re-run the check, read the facts the fix depends on with SELECTs only (control
+  file and redo member paths, OMF/ASM settings, `COMMON` grant flags, dependencies on PUBLIC-granted
+  packages, existing index/constraint names, current parameter values…) and return a script per finding:
+  steps with *run as* (`SYSDBA in CDB$ROOT`, `a DBA in <PDB>`, RMAN, OS shell), impact (restart,
+  downtime, Enterprise Edition, risk), prerequisites, verification and rollback.
+- Values the database cannot know (a second disk, a new password) are `<<PLACEHOLDERS>>` listed with the
+  recommendation. Risky lines are commented out on purpose (e.g. revoking widely used packages from
+  PUBLIC, resetting underscore parameters, password lifetime for service accounts).
+- Version/edition aware: `CONTAINER = ALL` only for common grants/users, `srvctl` steps on RAC, `ONLINE`
+  moves/rebuilds only on Enterprise Edition (table `MOVE ONLINE` from 12.2), Privilege Analysis capture
+  before revoking DBA/ANY privileges on EE 12c+.
+- Downloads: a `.sql` runbook (first statement is `EXIT`, so running the whole file by accident does
+  nothing; RMAN/shell lines are commented) and a standalone HTML page. Generating advice is recorded in
+  the audit log as `recommendations.generated`.
 
 ## 7a. Data sources & imports
 

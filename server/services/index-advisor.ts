@@ -66,7 +66,7 @@ async function explainRows(conn: Connection, sql: string): Promise<ExplainOut> {
   return { rows: r, text, cost: r[0]?.cost ?? null, planHash: Number(/Plan hash value: (\d+)/.exec(text)?.[1] ?? 0) || null }
 }
 
-async function tableInfos(conn: Connection, plan: PlanRow[]): Promise<Map<string, TableInfo>> {
+export async function tableInfos(conn: Connection, plan: PlanRow[]): Promise<Map<string, TableInfo>> {
   const tables = new Map<string, TableInfo>()
   const keys = [...new Set(plan.filter((r) => r.operation === 'TABLE ACCESS' && r.owner && r.object).map((r) => `${r.owner}.${r.object}`))]
   for (const k of keys) {

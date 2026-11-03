@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Panel } from '~~/shared/types/lab'
+import type { Panel, SqlIndexReport } from '~~/shared/types/lab'
 
 useHead({ title: 'SQL Tuning · OracleDB Data Lab' })
 const route = useRoute()
@@ -50,6 +50,18 @@ async function measure() {
   }
 }
 const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TABLE ACCESS' && /FULL/.test(l.options ?? ''))
+
+// Index recommendations from the real cursor plans of the top SQL (advice only; test in the Playground).
+const adviceTop = ref(30)
+const advice = useLoader<SqlIndexReport>(() => (activeId.value && tab.value === 'indexes' ? `/api/connections/${activeId.value}/tuning/index-advice` : null), { query: () => ({ top: adviceTop.value }) })
+const adviceOpen = ref<Set<string>>(new Set())
+function toggleAdvice(id: string) {
+  const s = new Set(adviceOpen.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  adviceOpen.value = s
+}
+const ddlFor = (c: { ddl: string }) => `${c.ddl};\n-- Test first: SQL Playground → Index Advisor creates it INVISIBLE and measures before/after.`
 </script>
 
 <template>
@@ -66,6 +78,7 @@ const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TAB
           v-model="tab"
           :tabs="[
             { id: 'top', label: 'Top SQL' },
+            { id: 'indexes', label: 'Index recommendations' },
             { id: 'inspect', label: 'Inspect SQL_ID' },
             { id: 'literals', label: 'Bind-variable analysis' },
             { id: 'workbench', label: 'Explain & compare' },
@@ -194,6 +207,77 @@ const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TAB
           <div v-else class="subtle">Loading…</div>
         </div>
 
+        <div v-else-if="tab === 'indexes'" class="stack">
+          <div class="callout info">
+            <Icon name="lucide:shield-check" size="16" />
+            <span><strong>Recommendations only.</strong> The top application SQL of the shared pool is analyzed on its real execution plans (V$SQL_PLAN with predicates) and column statistics. Nothing is created here — test a candidate in the SQL Playground (INVISIBLE index, before/after) and create it yourself.</span>
+          </div>
+          <UiCard title="Indexes that would help the slowest SQL" icon="lucide:lightbulb" flush>
+            <template #actions>
+              <select v-model.number="adviceTop" class="input" style="width: 150px" aria-label="Statements to analyze">
+                <option :value="20">Top 20 SQL</option>
+                <option :value="30">Top 30 SQL</option>
+                <option :value="50">Top 50 SQL</option>
+                <option :value="100">Top 100 SQL</option>
+              </select>
+              <button class="btn sm" :disabled="advice.loading.value" @click="advice.load()"><Icon name="lucide:refresh-cw" size="13" /> Re-analyze</button>
+            </template>
+            <p v-if="advice.loading.value && !advice.data.value" class="subtle pad"><span class="spin" aria-hidden="true" /> Reading plans of the top SQL…</p>
+            <div v-else-if="advice.error.value" class="callout bad pad-m"><Icon name="lucide:circle-x" size="16" />{{ advice.error.value }}</div>
+            <template v-else-if="advice.data.value">
+              <p class="subtle pad">{{ advice.data.value.analyzedSql }} statement(s) analyzed{{ advice.data.value.skipped.length ? `, ${advice.data.value.skipped.length} skipped (plan aged out)` : '' }}. {{ advice.data.value.windowNote }}</p>
+              <p v-if="!advice.data.value.advice.length" class="subtle pad">No index candidates: the top statements already use indexes, filter too much of their tables, or read small tables.</p>
+              <ul class="adv-list">
+                <li v-for="a in advice.data.value.advice" :key="a.candidate.id">
+                  <button class="adv-row" :aria-expanded="adviceOpen.has(a.candidate.id)" @click="toggleAdvice(a.candidate.id)">
+                    <Icon :name="adviceOpen.has(a.candidate.id) ? 'lucide:chevron-down' : 'lucide:chevron-right'" size="14" />
+                    <span v-if="a.candidate.coveredBy" class="badge"><Icon name="lucide:circle-help" size="12" />Index exists</span>
+                    <span v-else class="badge info"><Icon name="lucide:plus" size="12" />New index</span>
+                    <strong class="mono">{{ a.candidate.owner }}.{{ a.candidate.table }} ({{ a.candidate.columns.join(', ') }})</strong>
+                    <span class="adv-meta subtle">
+                      <span>{{ fmtPct(a.impactPct) }} of SQL time</span>
+                      <span>{{ a.sql.length }} statement(s)</span>
+                      <span v-if="a.candidate.selectivity != null">keeps {{ fmtPct(a.candidate.selectivity * 100, 2) }} of {{ fmtCompact(a.candidate.tableRows) }} rows</span>
+                    </span>
+                  </button>
+                  <div v-if="adviceOpen.has(a.candidate.id)" class="adv-body stack">
+                    <p class="rationale">{{ a.candidate.rationale }}</p>
+                    <UiCode v-if="!a.candidate.coveredBy" :code="ddlFor(a.candidate)" />
+                    <UiDataTable
+                      :columns="[
+                        { key: 'sqlId', label: 'SQL_ID', mono: true },
+                        { key: 'schema', label: 'Schema' },
+                        { key: 'executions', label: 'Execs', num: true, format: (v) => fmtCompact(v) },
+                        { key: 'elapsedMsPerExec', label: 'ms/exec', num: true, format: (v) => fmtMs(v) },
+                        { key: 'bufferGetsPerExec', label: 'Gets/exec', num: true, format: (v) => fmtCompact(v) },
+                        { key: 'dbTimePct', label: '% SQL time', num: true, format: (v) => fmtPct(v) },
+                        { key: 'text', label: 'SQL text', mono: true, maxWidth: '420px' },
+                      ]"
+                      :rows="a.sql"
+                      row-key="sqlId"
+                    />
+                    <div class="row">
+                      <NuxtLink v-for="s in a.sql.slice(0, 3)" :key="s.sqlId" class="btn sm" :to="{ path: '/playground', query: { sqlId: s.sqlId, schema: s.schema } }">
+                        <Icon name="lucide:square-terminal" size="13" /> Test {{ s.sqlId }} in Playground
+                      </NuxtLink>
+                      <button v-for="s in a.sql.slice(0, 1)" :key="`i${s.sqlId}`" class="btn sm ghost" @click="inspect(s.sqlId)"><Icon name="lucide:search" size="13" /> Inspect plan</button>
+                    </div>
+                  </div>
+                </li>
+              </ul>
+              <div v-if="advice.data.value.notes.length" class="pad">
+                <h3 class="notes-title">Predicates that stop an index from being used</h3>
+                <ul class="adv-notes">
+                  <li v-for="n in advice.data.value.notes" :key="n.sqlId + n.text" :class="n.severity">
+                    <Icon :name="n.severity === 'warning' ? 'lucide:triangle-alert' : 'lucide:info'" size="13" />
+                    <span>{{ n.text }} <button class="link mono" @click="inspect(n.sqlId)">{{ n.sqlId }}</button></span>
+                  </li>
+                </ul>
+              </div>
+            </template>
+          </UiCard>
+        </div>
+
         <UiCard v-else-if="tab === 'literals'" title="Statements differing only by literals (FORCE_MATCHING_SIGNATURE)" icon="lucide:brackets">
           <UiPanelView :panel="literals.data.value" :loading="literals.loading.value" :error="literals.error.value" empty-text="No literal-only duplicates (≥ 10 cursors) found — good bind variable usage.">
             <template #default="{ data }">
@@ -259,3 +343,92 @@ const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TAB
     </UiRequireProfile>
   </div>
 </template>
+
+<style scoped>
+.pad {
+  padding: 12px 14px;
+  margin: 0;
+}
+.pad-m {
+  margin: 12px 14px;
+}
+.adv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.adv-list > li {
+  border-top: 1px solid var(--border);
+}
+.adv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.adv-row:hover {
+  background: var(--bg-sunken);
+}
+.adv-row .badge::before {
+  display: none;
+}
+.adv-row strong {
+  overflow-wrap: anywhere;
+}
+.adv-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-left: auto;
+}
+.adv-body {
+  padding: 4px 14px 16px 38px;
+  gap: 10px;
+}
+.rationale {
+  margin: 0;
+}
+.notes-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.adv-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.adv-notes li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.adv-notes li.warning :deep(svg) {
+  color: var(--warn);
+}
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent, var(--info));
+  cursor: pointer;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .adv-body {
+    padding-left: 14px;
+  }
+}
+</style>

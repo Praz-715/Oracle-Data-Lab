@@ -583,6 +583,85 @@ export interface AssessmentFinding {
 /** An assessment section is a set of independently collected panels. */
 export type AssessmentSection = Record<string, Panel<any>>
 
+// ---------------------------------------------------------------------------------------------
+// Recommendations ("Fix it") — advice only, never executed by the app
+// ---------------------------------------------------------------------------------------------
+
+export interface FixStep {
+  title: string
+  /** sql = SQL*Plus/SQLcl, rman = RMAN prompt, shell = OS shell, check = read-only verification. */
+  kind: 'sql' | 'rman' | 'shell' | 'check'
+  /** Where/how to run it, e.g. "SYSDBA in CDB$ROOT", "in the PDB as a DBA", "as the schema owner". */
+  runAs: string
+  code: string
+}
+
+export interface Recommendation {
+  findingId: string
+  title: string
+  severity: AssessmentSeverity
+  category: string
+  /** What is wrong and why the fix helps. */
+  why: string
+  /** Operational impact of applying it. */
+  impact: { restart: boolean; downtime: boolean; enterpriseOnly: boolean; risk: 'low' | 'medium' | 'high'; notes: string[] }
+  prerequisites: string[]
+  steps: FixStep[]
+  verify: FixStep | null
+  rollback: FixStep | null
+  /** Values the app cannot know (target disks, passwords…) appear as <<PLACEHOLDER>> in the code. */
+  placeholders: string[]
+  /** Facts read from the database while building the advice (so the user sees what it is based on). */
+  basedOn: string[]
+  /** True when there is guidance but no script (e.g. character set migration). */
+  guidanceOnly: boolean
+}
+
+/** Recommendations for every open health-check finding of one database. */
+export interface RemediationPlan {
+  generatedAt: string
+  profileName: string
+  dbName: string | null
+  container: string | null
+  version: string | null
+  /** Health checks run / findings without anything to fix. */
+  checked: number
+  clean: number
+  recommendations: Recommendation[]
+  /** Findings whose advice could not be built (e.g. a missing privilege), with the reason. */
+  failed: { findingId: string; title: string; reason: string }[]
+}
+
+/** A statement from the shared pool, as analyzed by the SQL index advice. */
+export interface SqlRef {
+  sqlId: string
+  planHash: number | null
+  /** Parsing schema: the schema context to test the statement in. */
+  schema: string
+  executions: number
+  elapsedMsPerExec: number
+  bufferGetsPerExec: number
+  /** Share of the elapsed time of all application SQL in the shared pool. */
+  dbTimePct: number
+  text: string
+}
+
+export interface SqlIndexAdvice {
+  candidate: IndexCandidate
+  /** SQL statements whose real cursor plans led to this candidate. */
+  sql: SqlRef[]
+  /** Share of the analyzed SQL elapsed time that this index could affect. */
+  impactPct: number
+}
+
+export interface SqlIndexReport {
+  analyzedSql: number
+  windowNote: string
+  advice: SqlIndexAdvice[]
+  notes: (AdvisorNote & { sqlId: string })[]
+  skipped: { sqlId: string; reason: string }[]
+}
+
 /** Stored assessment run (full data kept server-side; this is the list/trend view). */
 export interface AssessmentSnapshotMeta {
   id: string

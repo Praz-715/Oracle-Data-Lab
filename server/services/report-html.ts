@@ -195,6 +195,7 @@ th { position: sticky; top: 0; background: var(--bg-sunken); color: var(--text-2
 td { padding: 6px 14px; border-top: 1px solid var(--border); vertical-align: top; }
 .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-sans); }
 pre { margin: 0; padding: 12px; background: var(--bg-sunken); border-radius: 5px; overflow: auto; font: 12px/1.45 var(--font-mono); max-height: 520px; }
+pre, .mono { font-variant-ligatures: none; }
 ul.errs { margin: 0; padding-left: 18px; font: 12px/1.5 var(--font-mono); }
 .unavailable { padding: 12px 14px; color: var(--text-2); background: var(--na-soft); border-radius: 5px; margin: 12px 14px; }
 .note { color: var(--text-3); font-size: 12px; padding: 8px 14px 12px; margin: 0; }
