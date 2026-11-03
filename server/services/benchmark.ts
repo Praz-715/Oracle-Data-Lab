@@ -3,14 +3,20 @@ import { z } from 'zod'
 import type { Connection } from 'oracledb'
 import type { BenchmarkConfig, BenchmarkEnvironment, BenchmarkResult } from '../../shared/types/lab'
 import { LatencyHistogram } from '../benchmarks/histogram'
+import { loadOlistKeys } from '../benchmarks/olist'
 import { SCENARIOS, getScenario, inlineBinds, scenarioInfo, type BenchRanges, type Op, type ScenarioEnv, type WorkerState } from '../benchmarks/scenarios'
+import { ActivitySampler, attachSqlText, summarizeActivity } from '../database/activity'
 import { driverInfo, getConnection, withConnection } from '../database/driver'
 import { detectEnvironment, versionMajorOf } from '../database/environment'
 import { oracleErrorInfo } from '../database/errors'
 import { ident, one, rows } from '../database/query'
 import { Rng, hash32 } from '../generators/prng'
 import { createJob, getJob, listJobs, registerExecutor, type JobContext } from '../jobs/runner'
+import { ashTicks, createAwrSnapshot, dbNow, snapshotInfo } from './diagnostics-pack'
 import { assertWritable, getProfile } from './profiles'
+
+/** Retail key ranges are not used by the Olist scenarios (they sample real keys instead). */
+const NO_RANGES: BenchRanges = { orderMin: 0, orderMax: 0, customerMin: 0, customerMax: 0, productMin: 0, productMax: 0, regionIds: [], dateMin: new Date(0), dateMax: new Date(0) }
 
 export const benchmarkConfigSchema = z.object({
   profileId: z.string().min(1),
@@ -150,14 +156,17 @@ async function execOp(conn: Connection, op: Op): Promise<number> {
   return r.rowsAffected ?? op.rows.length
 }
 
-async function capturePlan(conn: Connection, scenarioId: string, sample: Op | null): Promise<string | null> {
-  // Preferred: the actual cursor plan from the shared pool (needs V$SQL / V$SQL_PLAN access).
+async function capturePlan(conn: Connection, tagId: string, sample: Op | null, topSqlId?: string | null): Promise<string | null> {
+  // Preferred: the actual cursor plan from the shared pool (needs V$SQL / V$SQL_PLAN access) — of the
+  // statement that used the most DB time in this run when known (mixed workloads), else by tag.
   try {
     const s = await one<{ id: string; child: number }>(
       conn,
-      `SELECT * FROM (SELECT SQL_ID AS "id", CHILD_NUMBER AS "child" FROM V$SQL
-         WHERE SQL_TEXT LIKE :t AND SQL_TEXT NOT LIKE '%V$SQL%' ORDER BY LAST_ACTIVE_TIME DESC) WHERE ROWNUM = 1`,
-      { t: `%ODL-BENCH ${scenarioId} */%` },
+      topSqlId
+        ? `SELECT * FROM (SELECT SQL_ID AS "id", CHILD_NUMBER AS "child" FROM V$SQL WHERE SQL_ID = :t ORDER BY LAST_ACTIVE_TIME DESC) WHERE ROWNUM = 1`
+        : `SELECT * FROM (SELECT SQL_ID AS "id", CHILD_NUMBER AS "child" FROM V$SQL
+             WHERE SQL_TEXT LIKE :t AND SQL_TEXT NOT LIKE '%V$SQL%' ORDER BY LAST_ACTIVE_TIME DESC) WHERE ROWNUM = 1`,
+      { t: topSqlId ?? `%ODL-BENCH ${tagId} */%` },
     )
     if (s) {
       const plan = await rows<{ l: string }>(
@@ -190,14 +199,23 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
   const S = cfg.schema
   const P = cfg.prefix
 
-  ctx.progress({ phase: 'preparing', message: 'Capturing environment and key ranges' })
-  const { ranges, environment, versionMajor } = await withConnection(profile.id, async (conn) => ({
-    ranges: await loadRanges(conn, S, P),
+  const olistRun = scenarioInfo(scenario).dataset === 'olist'
+  ctx.progress({ phase: 'preparing', message: olistRun ? 'Capturing environment and sampling real Olist keys' : 'Capturing environment and key ranges' })
+  const { ranges, olist, environment, versionMajor } = await withConnection(profile.id, async (conn) => ({
+    ranges: olistRun ? NO_RANGES : await loadRanges(conn, S, P),
+    olist: olistRun ? await loadOlistKeys(conn, S, P) : undefined,
     environment: await captureEnvironment(conn, S, P),
     versionMajor: versionMajorOf(conn),
   }))
 
-  const env: ScenarioEnv = { S, P, runId: ctx.job.id, versionMajor, batchSize: cfg.batchSize, readRatio: cfg.readRatio, ranges }
+  const env: ScenarioEnv = { S, P, runId: ctx.job.id, versionMajor, batchSize: cfg.batchSize, readRatio: cfg.readRatio, ranges, olist }
+  const licensed = profile.diagnosticsPack
+  const diagNotes: string[] = []
+  let sampler: ActivitySampler | null = null
+  let diagConn: Connection | null = null
+  let dbStart: string | null = null
+  let beginSnap: number | null = null
+  const benchSids = new Set<number>()
   const conns: Connection[] = []
   const hist = new LatencyHistogram()
   const secHist = new LatencyHistogram()
@@ -217,6 +235,28 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
       conns.push(await getConnection(profile.id, { purpose: 'bench', size: cfg.concurrency, action: `bench:${scenario.id}`, callTimeoutMs: 60000 }))
     }
     const workers: WorkerState[] = conns.map((_, i) => ({ worker: i + 1, rng: new Rng(hash32(ctx.job.id, i)), opIndex: 0, ids: [], cursor: 0 }))
+
+    // ASH-lite: sample V$SESSION every second on a separate session, attributing samples to this
+    // run by the SIDs of its own sessions.
+    for (const c of conns) {
+      const r = await one<{ SID: string }>(c, `SELECT SYS_CONTEXT('USERENV', 'SID') AS "SID" FROM DUAL`)
+      if (r) benchSids.add(Number(r.SID))
+    }
+    try {
+      diagConn = await getConnection(profile.id, { action: 'ash-lite', callTimeoutMs: 120000 })
+      sampler = new ActivitySampler(diagConn).start()
+    } catch (err) {
+      diagNotes.push(`ASH-lite sampling unavailable: ${oracleErrorInfo(err).message}`)
+    }
+    const markStart = async () => {
+      if (!diagConn) return
+      try {
+        dbStart = await dbNow(diagConn)
+        if (licensed) beginSnap = await createAwrSnapshot(profile, diagConn)
+      } catch (err) {
+        diagNotes.push(`AWR begin snapshot failed: ${oracleErrorInfo(err).message}`)
+      }
+    }
     if (scenario.seedPerWorker) {
       ctx.progress({ phase: 'seeding', message: `Seeding ${scenario.seedPerWorker.toLocaleString()} rows per session` })
       await Promise.all(workers.map((w, i) => seedWorker(conns[i]!, env, w, scenario.seedPerWorker!)))
@@ -228,6 +268,7 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
     let measuring = cfg.warmupSeconds === 0
     let measureStart = measuring ? t0 : 0
     let secStart = measureStart
+    let startMarked: Promise<void> | null = measuring ? markStart() : null
 
     const tick = setInterval(() => {
       const now = Date.now()
@@ -235,6 +276,7 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
         measuring = true
         measureStart = now
         secStart = now
+        startMarked = markStart()
       }
       if (measuring && now - secStart >= 1000) {
         timeline.push({ t: Math.round((secStart - measureStart) / 1000), ops: secOps, p95Ms: Math.round(secHist.percentile(95) * 1000) / 1000, errors: secErrors })
@@ -294,14 +336,49 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
 
     await Promise.all(workers.map((w, i) => loop(w, conns[i]!)))
     clearInterval(tick)
+    sampler?.stop()
     ctx.throwIfCancelled()
     const finishedAt = new Date()
     const measuredSeconds = Math.max(0.001, (finishedAt.getTime() - (measureStart || finishedAt.getTime())) / 1000)
+    await startMarked
+
+    // Database activity of this run: ASH-lite always, Oracle ASH + AWR only when licensed.
+    ctx.progress({ phase: 'activity', message: licensed ? 'Summarizing activity, AWR snapshot and ASH' : 'Summarizing sampled activity (ASH-lite)' })
+    let activity: BenchmarkResult['activity'] = null
+    let otherAas: number | null = null
+    let ash: BenchmarkResult['ash'] = null
+    let awr: BenchmarkResult['awr'] = null
+    const bucketSec = cfg.durationSeconds > 300 ? 5 : 1
+    if (sampler && diagConn) {
+      if (sampler.error) diagNotes.push(`ASH-lite sampling stopped: ${sampler.error}`)
+      else {
+        const win = { source: 'ash-lite' as const, intervalSec: 1, t0: measureStart, t1: finishedAt.getTime(), bucketSec }
+        activity = await attachSqlText(diagConn, summarizeActivity(sampler.ticks, { ...win, filter: (s) => benchSids.has(s.sid) }))
+        otherAas = summarizeActivity(sampler.ticks, { ...win, filter: (s) => !benchSids.has(s.sid) }).aas
+      }
+    }
+    if (licensed && diagConn) {
+      try {
+        const dbEnd = await dbNow(diagConn)
+        if (beginSnap != null) {
+          const endSnap = await createAwrSnapshot(profile, diagConn)
+          awr = { ...(await snapshotInfo(profile, diagConn, beginSnap)), beginSnap, endSnap }
+        }
+        if (dbStart) {
+          const ticks = await ashTicks(profile, diagConn, { from: dbStart, to: dbEnd, t0Ms: measureStart, sids: [...benchSids] })
+          ash = await attachSqlText(diagConn, summarizeActivity(ticks, { source: 'ash', intervalSec: 1, t0: measureStart, bucketSec }))
+        }
+      } catch (err) {
+        diagNotes.push(`ASH/AWR capture failed: ${oracleErrorInfo(err).code}: ${oracleErrorInfo(err).message}`)
+      }
+    }
 
     let plan: string | null = null
     if (cfg.capturePlan) {
       ctx.progress({ phase: 'capturing plan', message: 'Reading execution plan' })
-      plan = await capturePlan(conns[0]!, scenario.id, sample)
+      // Mixed scenarios: show the plan of the statement that dominated DB time (ASH-lite), else the sampled one.
+      const top = activity?.topSql.find((q) => q.text?.includes('ODL-BENCH'))?.sqlId ?? null
+      plan = await capturePlan(conns[0]!, (sample as Op | null)?.label ?? scenario.id, sample, scenario.category === 'mixed' ? top : null)
     }
     if (scenario.writes && cfg.cleanupAfter) {
       ctx.progress({ phase: 'cleanup', message: 'Deleting rows written by this run' })
@@ -330,10 +407,17 @@ async function benchmarkExecutor(ctx: JobContext<BenchmarkConfig>): Promise<Benc
       errorSamples,
       plan,
       environment,
+      activity,
+      otherAas,
+      ash,
+      awr,
+      diagnosticsNote: diagNotes.length ? diagNotes.join(' · ') : null,
     }
     await audit({ action: 'benchmark.completed', profileId: profile.id, target: S, detail: `${scenario.id}: ${result.opsPerSec} ops/s p95 ${result.latency.p95Ms}ms`, outcome: 'ok' })
     return result
   } finally {
+    sampler?.stop()
+    await diagConn?.close().catch(() => {})
     await Promise.all(conns.map((c) => c.close().catch(() => {})))
   }
 }

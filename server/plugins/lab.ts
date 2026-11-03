@@ -1,5 +1,6 @@
 import { closeAllPools, initDriver } from '../database/driver'
 import { recoverJobs } from '../jobs/runner'
+import { stopAllActivity } from '../services/activity'
 // Side-effect imports register the job executors.
 import '../services/schema'
 import '../services/generator'
@@ -19,6 +20,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   if (n) console.warn(`[odl] ${n} job(s) were active during the last shutdown and are now marked interrupted (resumable from Job History).`)
 
   nitroApp.hooks.hook('close', async () => {
+    await stopAllActivity()
     await closeAllPools()
   })
 })

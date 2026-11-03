@@ -125,6 +125,9 @@ const fullScanLines = (lines: any[]) => lines.filter((l) => l.operation === 'TAB
               </UiPanelView>
             </UiCard>
             <UiCard title="SQL text" icon="lucide:code">
+              <template #actions>
+                <NuxtLink class="btn sm" :to="{ path: '/playground', query: { sqlId } }"><Icon name="lucide:square-terminal" size="13" /> Open in Playground</NuxtLink>
+              </template>
               <UiPanelView :panel="detail.data.value.text"><template #default="{ data }"><UiCode :code="data ?? ''" max-height="240px" /></template></UiPanelView>
             </UiCard>
             <UiCard title="Execution plan (DBMS_XPLAN.DISPLAY_CURSOR)" icon="lucide:route">

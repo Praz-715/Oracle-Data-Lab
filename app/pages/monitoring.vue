@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { Panel } from '~~/shared/types/lab'
+import type { ActivitySummary, Panel } from '~~/shared/types/lab'
 
 useHead({ title: 'Instance Monitoring · OracleDB Data Lab' })
-const { activeId } = useActiveProfile()
+const { activeId, active } = useActiveProfile()
 const live = useLiveMetrics(5000)
-const tab = ref('sessions')
+const tab = ref('activity')
 const sessionFilter = ref<'ACTIVE' | 'ALL'>('ACTIVE')
 
 const url = (p: string) => (activeId.value ? `/api/connections/${activeId.value}/monitor/${p}` : null)
@@ -16,6 +16,21 @@ const processes = useLoader<Panel<any[]>>(() => (tab.value === 'memory' ? url('p
 const longops = useLoader<Panel<any>>(() => (tab.value === 'longops' ? url('longops') : null))
 const temp = useLoader<Panel<any[]>>(() => (tab.value === 'longops' ? url('temp') : null))
 
+// Top activity: ASH-lite sampled server-side every second (or Oracle ASH when licensed).
+const activityWindow = ref(300)
+const activitySource = ref<'ash-lite' | 'ash'>('ash-lite')
+watch(active, (p) => {
+  if (!p?.diagnosticsPack) activitySource.value = 'ash-lite'
+})
+const activity = useLoader<{ summary: ActivitySummary; samplingSince: string | null; windowSec: number; cpuCount: number | null }>(
+  () => (tab.value === 'activity' && activeId.value ? `/api/connections/${activeId.value}/activity` : null),
+  { query: () => ({ window: activityWindow.value, source: activitySource.value }) },
+)
+const agoFormat = (t: number) => {
+  const ago = Math.max(0, (activity.data.value?.windowSec ?? activityWindow.value) - t)
+  return ago >= 60 ? `-${Math.round(ago / 60)}m` : `-${Math.round(ago)}s`
+}
+usePolling(() => tab.value === 'activity' && activity.load(), 5000)
 usePolling(() => {
   if (tab.value === 'sessions') sessions.load()
   if (tab.value === 'waits') waits.load()
@@ -101,6 +116,7 @@ const pgaPick = (d: any, name: string) => (d.pga as any[]).find((r) => r.name ==
         <UiTabs
           v-model="tab"
           :tabs="[
+            { id: 'activity', label: 'Top activity' },
             { id: 'sessions', label: 'Sessions' },
             { id: 'waits', label: 'Wait events' },
             { id: 'blocking', label: 'Blocking & locks' },
@@ -108,6 +124,33 @@ const pgaPick = (d: any, name: string) => (d.pga as any[]).find((r) => r.name ==
             { id: 'longops', label: 'Long-running & TEMP' },
           ]"
         />
+
+        <UiCard v-if="tab === 'activity'" title="Top activity" icon="lucide:activity">
+          <template #actions>
+            <div class="seg" role="group" aria-label="Time window">
+              <button v-for="w in [300, 900, 3600]" :key="w" :aria-pressed="activityWindow === w" @click="activityWindow = w">{{ w / 60 }} min</button>
+            </div>
+            <div class="seg" role="group" aria-label="Activity source">
+              <button :aria-pressed="activitySource === 'ash-lite'" @click="activitySource = 'ash-lite'">ASH-lite</button>
+              <button
+                :aria-pressed="activitySource === 'ash'"
+                :disabled="!active?.diagnosticsPack"
+                :title="active?.diagnosticsPack ? 'Oracle ASH (Diagnostics Pack)' : 'Confirm a Diagnostics Pack license for this profile in Connections to use Oracle ASH'"
+                @click="activitySource = 'ash'"
+              >
+                Oracle ASH
+              </button>
+            </div>
+          </template>
+          <div v-if="activity.error.value" class="callout bad"><Icon name="lucide:circle-x" size="16" />{{ activity.error.value }}</div>
+          <div v-else-if="!activity.data.value" class="subtle">Starting the sampler…</div>
+          <template v-else>
+            <p v-if="activity.data.value.samplingSince && Date.now() - Date.parse(activity.data.value.samplingSince) < activityWindow * 1000" class="subtle" style="margin: 0 0 8px">
+              ASH-lite started sampling {{ fmtRelative(activity.data.value.samplingSince) }} — the window fills up while this page stays open (sampling stops a minute after you leave).
+            </p>
+            <ActivitySummary :summary="activity.data.value.summary" :cpu-count="activity.data.value.cpuCount" :x-format="agoFormat" show-sessions :height="220" />
+          </template>
+        </UiCard>
 
         <UiCard v-if="tab === 'sessions'" title="User sessions (V$SESSION)" icon="lucide:users" flush>
           <template #actions>

@@ -33,13 +33,16 @@ describe('benchmark scenarios', () => {
     ranges: { orderMin: 1, orderMax: 1000, customerMin: 1, customerMax: 100, productMin: 1, productMax: 50, regionIds: [1, 2], dateMin: new Date(2024, 0, 1), dateMax: new Date(2025, 0, 1) },
   }
 
-  it('covers the 18 documented scenarios with unique ids', () => {
-    expect(SCENARIOS.map((s) => s.no)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1))
-    expect(new Set(SCENARIOS.map((s) => s.id)).size).toBe(18)
+  const retail = SCENARIOS.filter((s) => (s.dataset ?? 'retail') === 'retail')
+
+  it('covers the 18 retail scenarios plus the 8 Olist scenarios with unique ids', () => {
+    expect(retail.map((s) => s.no)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1))
+    expect(SCENARIOS.map((s) => s.no)).toEqual(Array.from({ length: 26 }, (_, i) => i + 1))
+    expect(new Set(SCENARIOS.map((s) => s.id)).size).toBe(26)
   })
 
-  it('every scenario produces executable-looking SQL against the lab schema', () => {
-    for (const s of SCENARIOS) {
+  it('every retail scenario produces executable-looking SQL against the lab schema', () => {
+    for (const s of retail) {
       const w: WorkerState = { worker: 1, rng: new Rng(1), opIndex: 0, ids: [1, 2, 3], cursor: 0 }
       const op = s.next(env, w)
       expect(op.sql, s.id).toContain('LAB.DL_')

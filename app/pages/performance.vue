@@ -28,7 +28,7 @@ async function run() {
   try {
     const job = await api<JobRecord>('/api/benchmarks/run', {
       method: 'POST',
-      body: { profileId: activeId.value, schema: schema.value, prefix: prefix.value, scenarioId: scenarioId.value, ...cfg, confirmHeavy: heavy.value },
+      body: { profileId: activeId.value, schema: schema.value, prefix: runPrefix.value, scenarioId: scenarioId.value, ...cfg, confirmHeavy: heavy.value },
     })
     jobId.value = job.id
     liveOps.value = []
@@ -59,10 +59,26 @@ watch(result, (r) => r && history.load())
 const history = useLoader<any[]>(() => '/api/benchmarks/history', { query: () => ({ profileId: activeId.value }) })
 const compare = ref<string[]>([])
 const compared = computed(() => (history.data.value ?? []).filter((h) => compare.value.includes(h.id)))
-const byCategory = computed(() => {
-  const m = new Map<string, BenchmarkScenarioInfo[]>()
-  for (const s of meta.data.value?.scenarios ?? []) m.set(s.category, [...(m.get(s.category) ?? []), s])
-  return [...m.entries()]
+// Scenarios grouped by data set, then category. Olist scenarios run on the imported OL_* tables and
+// keep their own prefix so switching data sets never changes the retail prefix used elsewhere.
+const DATASETS = { retail: 'Retail blueprint (synthetic)', olist: 'Olist e-commerce (imported real data)' } as const
+const byDataset = computed(() =>
+  (Object.keys(DATASETS) as (keyof typeof DATASETS)[])
+    .map((d) => {
+      const m = new Map<string, BenchmarkScenarioInfo[]>()
+      for (const s of meta.data.value?.scenarios ?? []) if (s.dataset === d) m.set(s.category, [...(m.get(s.category) ?? []), s])
+      return { dataset: d, label: DATASETS[d], groups: [...m.entries()] }
+    })
+    .filter((g) => g.groups.length),
+)
+const olistPrefix = useState<string>('odl-olist-prefix', () => 'OL_')
+const isOlist = computed(() => scenario.value?.dataset === 'olist')
+const runPrefix = computed({
+  get: () => (isOlist.value ? olistPrefix.value : prefix.value),
+  set: (v: string) => {
+    if (isOlist.value) olistPrefix.value = v
+    else prefix.value = v
+  },
 })
 </script>
 
@@ -83,7 +99,9 @@ const byCategory = computed(() => {
           <div class="grid two">
             <UiCard title="Scenario" icon="lucide:list-checks">
               <div class="scenarios">
-                <div v-for="[cat, list] in byCategory" :key="cat">
+                <template v-for="d in byDataset" :key="d.dataset">
+                <div class="ds">{{ d.label }}</div>
+                <div v-for="[cat, list] in d.groups" :key="d.dataset + cat">
                   <div class="cat">{{ cat }}</div>
                   <button
                     v-for="s in list"
@@ -98,6 +116,7 @@ const byCategory = computed(() => {
                     <span v-if="s.writes" class="badge warn plain">writes</span>
                   </button>
                 </div>
+                </template>
               </div>
             </UiCard>
 
@@ -106,7 +125,7 @@ const byCategory = computed(() => {
                 <p v-if="scenario" class="muted">{{ scenario.description }}</p>
                 <div class="form-grid">
                   <label class="field"><span>Schema</span><input v-model="schema" class="input mono" ></label>
-                  <label class="field"><span>Prefix</span><input v-model="prefix" class="input mono" ></label>
+                  <label class="field"><span>Prefix</span><input v-model="runPrefix" class="input mono" ><small v-if="isOlist">Tables of the imported Olist bundle</small></label>
                   <label class="field"><span>Concurrent sessions</span><input v-model.number="cfg.concurrency" type="number" min="1" :max="meta.data.value?.limits.maxConcurrency" class="input" ><small>Limit {{ meta.data.value?.limits.maxConcurrency }}</small></label>
                   <label class="field"><span>Warm-up (s)</span><input v-model.number="cfg.warmupSeconds" type="number" min="0" class="input" ></label>
                   <label class="field"><span>Measured duration (s)</span><input v-model.number="cfg.durationSeconds" type="number" min="5" class="input" ></label>
@@ -192,7 +211,7 @@ const byCategory = computed(() => {
           <strong>#{{ scenario?.no }} {{ scenario?.name }}</strong> with <strong>{{ cfg.concurrency }}</strong> session(s) for
           {{ cfg.warmupSeconds }} s warm-up + {{ cfg.durationSeconds }} s.
         </p>
-        <p v-if="scenario?.writes">It <strong>writes</strong> to <span class="mono">{{ schema }}.{{ prefix }}BENCH_EVENTS</span> (rows tagged with the run id{{ cfg.cleanupAfter ? ', deleted afterwards' : '' }}).</p>
+        <p v-if="scenario?.writes">It <strong>writes</strong> to <span class="mono">{{ schema }}.{{ runPrefix }}BENCH_EVENTS</span> (rows tagged with the run id{{ cfg.cleanupAfter ? ', deleted afterwards' : '' }}).</p>
         <p v-else>It can put significant load on the database (full scans / aggregation or high concurrency).</p>
         <p class="subtle">Only run this against a lab or test database.</p>
       </UiConfirm>
@@ -205,6 +224,17 @@ const byCategory = computed(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 12px;
+}
+.ds {
+  grid-column: 1 / -1;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.ds:not(:first-child) {
+  margin-top: 6px;
 }
 .cat {
   font-size: 11px;

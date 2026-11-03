@@ -1,5 +1,6 @@
 import type { BenchmarkScenarioInfo } from '../../shared/types/lab'
 import type { Rng } from '../generators/prng'
+import { OLIST_SCENARIOS, type OlistKeys } from './olist'
 
 export interface BenchRanges {
   orderMin: number
@@ -21,6 +22,8 @@ export interface ScenarioEnv {
   batchSize: number
   readRatio: number
   ranges: BenchRanges
+  /** Real key samples for the Olist scenarios. */
+  olist?: OlistKeys
 }
 
 export interface WorkerState {
@@ -37,7 +40,9 @@ export type Op =
   | { kind: 'dml'; sql: string; binds: Record<string, unknown>; commit: boolean; autoCommit?: boolean; label?: string }
   | { kind: 'many'; sql: string; rows: unknown[][]; commit: boolean; label?: string }
 
-export interface Scenario extends BenchmarkScenarioInfo {
+export interface Scenario extends Omit<BenchmarkScenarioInfo, 'dataset' | 'defaultPrefix'> {
+  dataset?: BenchmarkScenarioInfo['dataset']
+  defaultPrefix?: string
   /** Rows to pre-seed per worker in BENCH_EVENTS (update/delete targets). */
   seedPerWorker?: number
   next(env: ScenarioEnv, w: WorkerState): Op
@@ -113,7 +118,7 @@ const updateSeeded = (env: ScenarioEnv, w: WorkerState): Op => ({
   commit: (w.opIndex + 1) % env.batchSize === 0,
 })
 
-export const SCENARIOS: Scenario[] = [
+const RETAIL: Scenario[] = [
   {
     id: 'insert-single', no: 1, name: 'Single-row INSERT', category: 'write', writes: true, defaultConcurrency: 4, requiresSchema: true,
     description: 'One INSERT per round trip using a sequence; commit every "batch size" operations.',
@@ -303,9 +308,11 @@ export const SCENARIOS: Scenario[] = [
   },
 ]
 
+export const SCENARIOS: Scenario[] = [...RETAIL, ...OLIST_SCENARIOS]
+
 export function scenarioInfo(s: Scenario): BenchmarkScenarioInfo {
   const { next: _n, seedPerWorker: _s, ...info } = s
-  return info
+  return { ...info, dataset: info.dataset ?? 'retail', defaultPrefix: info.defaultPrefix ?? 'DL_' }
 }
 
 export function getScenario(id: string): Scenario {

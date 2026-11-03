@@ -155,7 +155,7 @@ h3 { font-size: 13px; }
 p { margin: 0 0 8px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-code, pre, .mono { font-family: var(--font-mono); font-size: 12.5px; }
+code, pre, .mono, textarea.input { font-family: var(--font-mono); font-size: 12.5px; font-variant-ligatures: none; }
 .num { font-variant-numeric: tabular-nums; }
 .muted { color: var(--text-2); }
 .subtle { color: var(--text-3); font-size: 12px; }

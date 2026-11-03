@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AssessmentFinding, AssessmentSection } from '~~/shared/types/lab'
+import type { AssessmentDiff, AssessmentFinding, AssessmentSection, AssessmentSnapshotMeta } from '~~/shared/types/lab'
 
 useHead({ title: 'Database Assessment · OracleDB Data Lab' })
 const { activeId } = useActiveProfile()
@@ -22,10 +22,10 @@ const TABS = [
 ] as const
 type SectionId = (typeof TABS)[number]['id']
 
-const tab = ref<SectionId>('summary')
+const tab = ref<SectionId | 'history'>('summary')
 // Sections load the first time their tab is opened and stay cached until Refresh.
 const visited = reactive(new Set<SectionId>(['summary', 'findings']))
-watch(tab, (t) => visited.add(t))
+watch(tab, (t) => t !== 'history' && visited.add(t))
 const base = computed(() => (activeId.value ? `/api/connections/${activeId.value}/assessment` : null))
 function section(id: SectionId) {
   return useLoader<AssessmentSection>(() => (base.value && visited.has(id) ? `${base.value}/${id}` : null))
@@ -47,8 +47,76 @@ function refresh() {
 const findings = computed(() => okData<AssessmentFinding[]>('findings', 'findings') ?? [])
 const issueCount = computed(() => findings.value.filter((f) => f.severity === 'critical' || f.severity === 'warning').length)
 const sevCount = (s: AssessmentFinding['severity']) => findings.value.filter((f) => f.severity === s).length
-const tabs = computed(() => TABS.map((t) => ({ ...t, count: t.id === 'findings' && findings.value.length ? issueCount.value : null })))
+const tabs = computed(() => [
+  ...TABS.map((t) => ({ ...t, count: t.id === 'findings' && findings.value.length ? issueCount.value : null })),
+  { id: 'history', label: 'History & compare', count: snapshots.data.value?.length || null },
+])
 const counts = computed(() => okData<Record<string, number | null>>('summary', 'counts'))
+
+// ---- history & compare ----
+const historyScope = ref<'profile' | 'all'>('profile')
+const snapshots = useLoader<AssessmentSnapshotMeta[]>(() => (historyScope.value === 'all' ? '/api/assessment/snapshots' : activeId.value ? `/api/assessment/snapshots?profileId=${activeId.value}` : null))
+const snapLabel = ref('')
+const snapping = ref(false)
+async function saveSnapshot() {
+  if (!activeId.value) return
+  snapping.value = true
+  try {
+    const m = await api<AssessmentSnapshotMeta>('/api/assessment/snapshots', { method: 'POST', body: { profileId: activeId.value, label: snapLabel.value } })
+    push({ tone: 'ok', title: 'Snapshot saved', detail: `${m.dbName ?? m.profileName}${m.label ? ` · ${m.label}` : ''}` })
+    snapLabel.value = ''
+    await snapshots.load()
+  } catch (err) {
+    push({ tone: 'bad', title: 'Snapshot failed', detail: apiErrorMessage(err) })
+  } finally {
+    snapping.value = false
+  }
+}
+const picked = ref<string[]>([])
+function togglePick(id: string) {
+  picked.value = picked.value.includes(id) ? picked.value.filter((x) => x !== id) : [...picked.value, id].slice(-2)
+}
+/** Older snapshot is A, newer is B. */
+const pair = computed(() => {
+  const list = (snapshots.data.value ?? []).filter((s) => picked.value.includes(s.id)).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  return list.length === 2 ? { a: list[0]!, b: list[1]! } : null
+})
+const diff = ref<AssessmentDiff | null>(null)
+const comparing = ref(false)
+async function compare() {
+  if (!pair.value) return
+  comparing.value = true
+  try {
+    diff.value = await api<AssessmentDiff>(`/api/assessment/compare?a=${pair.value.a.id}&b=${pair.value.b.id}`)
+  } catch (err) {
+    push({ tone: 'bad', title: 'Compare failed', detail: apiErrorMessage(err) })
+  } finally {
+    comparing.value = false
+  }
+}
+const deletingSnap = ref<AssessmentSnapshotMeta | null>(null)
+async function deleteSnapshot() {
+  const s = deletingSnap.value
+  if (!s) return
+  try {
+    await api(`/api/assessment/snapshots/${s.id}`, { method: 'DELETE' })
+    picked.value = picked.value.filter((x) => x !== s.id)
+    if (diff.value && (diff.value.a.id === s.id || diff.value.b.id === s.id)) diff.value = null
+    await snapshots.load()
+  } catch (err) {
+    push({ tone: 'bad', title: 'Delete failed', detail: apiErrorMessage(err) })
+  } finally {
+    deletingSnap.value = null
+  }
+}
+// Trends: snapshots of the active profile, oldest first (separate charts — different units).
+const trend = computed(() => (snapshots.data.value ?? []).filter((s) => s.profileId === activeId.value).sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
+const trendIssues = computed(() => [
+  { name: 'Critical', slot: 1, points: trend.value.map((s) => ({ x: Date.parse(s.createdAt), y: s.summary.critical })) },
+  { name: 'Warning', slot: 3, points: trend.value.map((s) => ({ x: Date.parse(s.createdAt), y: s.summary.warning })) },
+])
+const trendSize = computed(() => [{ name: 'Database size', points: trend.value.map((s) => ({ x: Date.parse(s.createdAt), y: s.summary.dbSizeBytes })) }])
+const trendInvalid = computed(() => [{ name: 'Invalid objects', slot: 4, points: trend.value.map((s) => ({ x: Date.parse(s.createdAt), y: s.summary.invalid })) }])
 
 // ---- export ----
 const exporting = ref<'html' | 'json' | null>(null)
@@ -915,8 +983,94 @@ const switchSeries = computed(() => {
             </AssessmentPanel>
           </div>
         </template>
+
+        <!-- ================= History & compare ================= -->
+        <template v-else-if="tab === 'history'">
+          <UiCard title="Snapshots" icon="lucide:history" flush>
+            <template #actions>
+              <div class="seg" role="group" aria-label="Snapshot scope">
+                <button :aria-pressed="historyScope === 'profile'" @click="historyScope = 'profile'">This connection</button>
+                <button :aria-pressed="historyScope === 'all'" @click="historyScope = 'all'">All connections</button>
+              </div>
+              <input v-model="snapLabel" class="input snap-label" maxlength="120" placeholder="Label, e.g. before patch" @keydown.enter="saveSnapshot" >
+              <button class="btn sm primary" :disabled="snapping || !activeId" @click="saveSnapshot">
+                <Icon :name="snapping ? 'lucide:loader-circle' : 'lucide:camera'" :class="{ rot: snapping }" size="13" /> {{ snapping ? 'Collecting all sections…' : 'Save snapshot' }}
+              </button>
+            </template>
+            <p class="subtle pad">
+              A snapshot stores the whole assessment. Tick two snapshots — of this database over time, or of two different databases — and compare them.
+            </p>
+            <UiDataTable
+              :columns="[
+                { key: 'pick', label: '', sortable: false },
+                { key: 'createdAt', label: 'Taken', format: (v) => fmtDate(v) },
+                { key: 'label', label: 'Label', format: (v) => v || '—' },
+                { key: 'profileName', label: 'Connection' },
+                { key: 'dbName', label: 'Database', mono: true, format: (v, r) => `${v ?? '—'}${r.container && r.container !== v ? ` / ${r.container}` : ''}` },
+                { key: 'version', label: 'Version', mono: true },
+                { key: 'summary', label: 'Issues', sortable: false },
+                { key: 'size', label: 'Size', num: true, format: (_, r) => fmtBytes(r.summary.dbSizeBytes) },
+                { key: 'objects', label: 'Objects', num: true, format: (_, r) => fmtNum(r.summary.objects) },
+                { key: 'act', label: '', sortable: false },
+              ]"
+              :rows="snapshots.data.value ?? []"
+              row-key="id"
+              max-height="420px"
+              empty-text="No snapshots yet — save one to start the history."
+            >
+              <template #cell-pick="{ row }">
+                <input type="checkbox" :checked="picked.includes(row.id)" :aria-label="`Select snapshot ${row.label || row.createdAt}`" @change="togglePick(row.id)" >
+              </template>
+              <template #cell-summary="{ row }">
+                <span class="row tight">
+                  <span class="badge" :class="row.summary.critical ? 'bad' : 'ok'">{{ row.summary.critical }} critical</span>
+                  <span class="badge" :class="row.summary.warning ? 'warn' : 'ok'">{{ row.summary.warning }} warning</span>
+                </span>
+              </template>
+              <template #cell-act="{ row }">
+                <span class="row tight">
+                  <a class="btn sm ghost" :href="`/api/assessment/snapshots/${row.id}/report`" download title="HTML report of this snapshot"><Icon name="lucide:file-down" size="13" /></a>
+                  <button class="btn sm ghost" aria-label="Delete snapshot" @click="deletingSnap = row"><Icon name="lucide:trash-2" size="13" /></button>
+                </span>
+              </template>
+            </UiDataTable>
+            <div class="row pad">
+              <button class="btn primary" :disabled="!pair || comparing" @click="compare">
+                <Icon :name="comparing ? 'lucide:loader-circle' : 'lucide:git-compare'" :class="{ rot: comparing }" size="15" /> Compare
+              </button>
+              <span v-if="pair" class="subtle">
+                A = {{ pair.a.dbName }} · {{ fmtDate(pair.a.createdAt) }}{{ pair.a.label ? ` (${pair.a.label})` : '' }} → B = {{ pair.b.dbName }} · {{ fmtDate(pair.b.createdAt) }}{{ pair.b.label ? ` (${pair.b.label})` : '' }}
+              </span>
+              <span v-else class="subtle">Select two snapshots (the older one becomes A).</span>
+            </div>
+          </UiCard>
+
+          <div v-if="trend.length >= 2" class="grid three">
+            <UiCard title="Issues over time" icon="lucide:triangle-alert">
+              <ChartsLine :series="trendIssues" :height="150" :x-format="(v) => fmtDate(new Date(v).toISOString(), false)" :y-format="(v) => fmtNum(v)" />
+            </UiCard>
+            <UiCard title="Database size" icon="lucide:database">
+              <ChartsLine :series="trendSize" :height="150" area :x-format="(v) => fmtDate(new Date(v).toISOString(), false)" :y-format="(v) => fmtBytes(v, 1)" />
+            </UiCard>
+            <UiCard title="Invalid objects" icon="lucide:circle-x">
+              <ChartsLine :series="trendInvalid" :height="150" :x-format="(v) => fmtDate(new Date(v).toISOString(), false)" :y-format="(v) => fmtNum(v, 1)" />
+            </UiCard>
+          </div>
+
+          <template v-if="diff">
+            <div class="row between">
+              <h3 class="cmp-title">Comparison · {{ diff.a.dbName }} ({{ fmtDate(diff.a.createdAt) }}) → {{ diff.b.dbName }} ({{ fmtDate(diff.b.createdAt) }})</h3>
+              <a class="btn" :href="`/api/assessment/compare?a=${diff.a.id}&b=${diff.b.id}&format=html`" download><Icon name="lucide:file-down" size="14" /> HTML report</a>
+            </div>
+            <AssessmentCompare :diff="diff" />
+          </template>
+        </template>
       </div>
     </UiRequireProfile>
+
+    <UiConfirm :model-value="!!deletingSnap" title="Delete snapshot" confirm-label="Delete snapshot" danger @update:model-value="(v) => !v && (deletingSnap = null)" @confirm="deleteSnapshot">
+      <p>Delete the snapshot of <strong>{{ deletingSnap?.dbName ?? deletingSnap?.profileName }}</strong> taken {{ fmtDate(deletingSnap?.createdAt ?? null) }}{{ deletingSnap?.label ? ` (${deletingSnap.label})` : '' }}? The database is not touched.</p>
+    </UiConfirm>
   </div>
 </template>
 
@@ -985,6 +1139,22 @@ dd {
   border-right-color: transparent;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+.rot {
+  animation: spin 0.8s linear infinite;
+}
+.tight {
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.snap-label {
+  width: 220px;
+  height: 26px;
+  font-size: 12px;
+}
+.cmp-title {
+  margin: 6px 0 0;
+  font-size: 15px;
 }
 @keyframes spin {
   to {

@@ -49,7 +49,9 @@ function niceMax(v: number) {
 const yDomain = computed(() => {
   const ys = all.value.map((p) => p.y)
   const lo = props.yMin ?? Math.min(0, ...ys)
-  const hi = niceMax(Math.max(...ys, lo + 1e-9))
+  // A flat series (e.g. all zero) still gets a readable 0..1 axis instead of a 1e-9 range.
+  const top = ys.length ? Math.max(...ys) : lo
+  const hi = niceMax(top > lo ? top : lo + 1)
   return [lo, hi]
 })
 const sx = (x: number) => pad.l + ((x - xDomain.value[0]!) / (xDomain.value[1]! - xDomain.value[0]!)) * (width.value - pad.l - pad.r)

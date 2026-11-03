@@ -30,6 +30,7 @@ export const NAV: { section: string; items: NavItem[] }[] = [
     section: 'Performance',
     items: [
       { to: '/performance', label: 'Performance Lab', icon: 'lucide:gauge' },
+      { to: '/playground', label: 'SQL Playground', icon: 'lucide:square-terminal' },
       { to: '/tuning', label: 'SQL Tuning', icon: 'lucide:wrench' },
       { to: '/diagnostics', label: 'SQL Diagnostics', icon: 'lucide:stethoscope' },
     ],

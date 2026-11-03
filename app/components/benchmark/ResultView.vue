@@ -5,6 +5,8 @@ const props = defineProps<{ result: BenchmarkResult; jobId: string }>()
 const r = computed(() => props.result)
 const env = computed(() => r.value.environment)
 const errRate = computed(() => (r.value.operations + r.value.errors ? (r.value.errors / (r.value.operations + r.value.errors)) * 100 : 0))
+const activitySource = ref<'ash-lite' | 'ash'>('ash-lite')
+const activity = computed(() => (activitySource.value === 'ash' ? r.value.ash : r.value.activity) ?? null)
 </script>
 
 <template>
@@ -20,12 +22,28 @@ const errRate = computed(() => (r.value.operations + r.value.errors ? (r.value.e
 
     <div class="grid two">
       <UiCard title="Throughput per second" icon="lucide:trending-up">
-        <ChartsLine :series="[{ name: 'ops/s', points: r.timeline.map((t) => ({ x: t.t, y: t.ops })) }]" :x-format="(v) => `${v}s`" :y-format="(v) => fmtCompact(v)" :height="180" area />
+        <ChartsLine :series="[{ name: 'ops/s', points: r.timeline.map((t) => ({ x: t.t, y: t.ops })) }]" :x-format="(v) => `${Math.round(v)}s`" :y-format="(v) => fmtCompact(v)" :height="180" area />
       </UiCard>
       <UiCard title="p95 latency per second" icon="lucide:timer">
-        <ChartsLine :series="[{ name: 'p95', slot: 1, points: r.timeline.map((t) => ({ x: t.t, y: t.p95Ms })) }]" :x-format="(v) => `${v}s`" :y-format="(v) => fmtMs(v)" :height="180" />
+        <ChartsLine :series="[{ name: 'p95', slot: 1, points: r.timeline.map((t) => ({ x: t.t, y: t.p95Ms })) }]" :x-format="(v) => `${Math.round(v)}s`" :y-format="(v) => fmtMs(v)" :height="180" />
       </UiCard>
     </div>
+
+    <UiCard title="Database activity during the run" icon="lucide:activity">
+      <template #actions>
+        <div v-if="r.ash" class="seg" role="group" aria-label="Activity source">
+          <button :aria-pressed="activitySource === 'ash-lite'" @click="activitySource = 'ash-lite'">ASH-lite</button>
+          <button :aria-pressed="activitySource === 'ash'" @click="activitySource = 'ash'">Oracle ASH</button>
+        </div>
+        <a v-if="r.awr" class="btn sm" :href="`/api/benchmarks/${jobId}/awr`" download><Icon name="lucide:file-down" size="13" /> AWR report ({{ r.awr.beginSnap }}–{{ r.awr.endSnap }})</a>
+      </template>
+      <ActivitySummary v-if="activity" :summary="activity" :cpu-count="env.dbCpuCount" />
+      <p v-else class="subtle">Activity was not captured for this run{{ r.diagnosticsNote ? '' : ' (runs from before this feature have no activity data)' }}.</p>
+      <p v-if="r.otherAas" class="subtle note">
+        Other sessions were also active during the run (avg {{ fmtNum(r.otherAas, 2) }} active sessions) — results may include interference.
+      </p>
+      <div v-if="r.diagnosticsNote" class="callout warn note"><Icon name="lucide:triangle-alert" size="16" />{{ r.diagnosticsNote }}</div>
+    </UiCard>
 
     <div class="grid two">
       <UiCard title="Run configuration & environment" icon="lucide:clipboard-list">
@@ -87,6 +105,9 @@ dt {
 }
 dd {
   margin: 0;
+}
+.note {
+  margin: 10px 0 0;
 }
 .errs {
   margin: 0;

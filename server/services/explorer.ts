@@ -1,3 +1,4 @@
+import { cellValue } from './playground'
 import { withConnection } from '../database/driver'
 import { versionMajorOf } from '../database/environment'
 import { ident, one, paginate, rows } from '../database/query'
@@ -157,9 +158,14 @@ export async function tableRows(profileId: string, ownerIn: string, tableIn: str
     const order = cols[0] ? `"${cols[0].name}"` : '1'
     const base = `SELECT ${select.join(', ')} FROM "${owner}"."${table}" ORDER BY ${order}`
     const vm = versionMajorOf(conn)
-    const data = await rows(conn, paginate(base, vm), { off: (page - 1) * size, lim: size })
-    for (const r of data) delete (r as any).RN_
-    return { columns: cols, rows: data, page, pageSize: size }
+    const data = await rows<Record<string, unknown>>(conn, paginate(base, vm), { off: (page - 1) * size, lim: size })
+    // DATE/TIMESTAMP values arrive as JS Dates in the server zone; send the database wall clock as text
+    // (JSON would turn them into UTC ISO strings, shifted by the server's offset).
+    const out = data.map((r) => {
+      delete r.RN_
+      return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v instanceof Date ? cellValue(v) : v]))
+    })
+    return { columns: cols, rows: out, page, pageSize: size }
   }, { callTimeoutMs: 30000 })
 }
 

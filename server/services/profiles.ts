@@ -48,7 +48,7 @@ function key(id: string) {
 
 function toPublic(p: StoredProfile): ConnectionProfile {
   const { passwordEnc, walletPasswordEnc: _w, ...rest } = p
-  return { ...rest, hasPassword: !!passwordEnc }
+  return { ...rest, hasPassword: !!passwordEnc, diagnosticsPack: !!p.diagnosticsPack }
 }
 
 export async function listProfiles(): Promise<ConnectionProfile[]> {
@@ -92,6 +92,9 @@ export async function saveProfile(input: ValidConnectionInput, id?: string): Pro
     mode: input.mode,
     allowedSchemas: [...new Set(input.allowedSchemas)],
     notes: input.notes,
+    // Licensing flag is only changed through setDiagnosticsPack (explicit confirmation), never by edits.
+    diagnosticsPack: existing?.diagnosticsPack ?? false,
+    diagnosticsPackChangedAt: existing?.diagnosticsPackChangedAt ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     // An omitted/empty password on update keeps the stored one; it is never sent back.
@@ -180,3 +183,30 @@ export function assertWritable(profile: ConnectionProfile, schema: string): void
 }
 
 export type { ConnectionInput, StoredProfile }
+
+/** Records that the user confirmed (or withdrew) a Diagnostics Pack license for this database. */
+export async function setDiagnosticsPack(id: string, enabled: boolean): Promise<ConnectionProfile> {
+  const p = await getStoredProfile(id)
+  p.diagnosticsPack = enabled
+  p.diagnosticsPackChangedAt = nowIso()
+  p.updatedAt = p.diagnosticsPackChangedAt
+  await labStore().setItem(key(id), p)
+  await audit({
+    action: enabled ? 'license.diagnostics-pack.confirmed' : 'license.diagnostics-pack.withdrawn',
+    profileId: id,
+    target: p.name,
+    detail: enabled ? 'User confirmed the database is licensed for Oracle Diagnostics Pack; ASH/AWR queries enabled.' : 'ASH/AWR queries disabled.',
+    outcome: 'ok',
+  })
+  return toPublic(p)
+}
+
+/** Guard for every ASH / AWR access. */
+export function assertDiagnosticsPack(profile: ConnectionProfile): void {
+  if (!profile.diagnosticsPack) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: `"${profile.name}" is not marked as licensed for Oracle Diagnostics Pack, so ASH and AWR are not queried. Confirm the license in Connections first.`,
+    })
+  }
+}

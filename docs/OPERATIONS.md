@@ -55,6 +55,13 @@ otherwise. Connected to a **PDB** you see that container: `V$SPPARAMETER` lists 
 empty — connect a profile to `CDB$ROOT` to assess the instance-wide SPFILE and limits.
 `DBA_FEATURE_USAGE_STATISTICS` is shown for information only; it is not a license determination.
 
+**Assessment history:** *History & compare → Save snapshot* stores the complete assessment (all sections)
+in `.data/lab` (a few hundred KB each). Any two snapshots can be compared — the same database over time
+(before/after a patch or change) or two different databases. Rows are matched by key per area; changes
+in configuration fields are listed separately from numeric drift (sizes are reported from 1 % change,
+counts on any change). Panels that one side could not read are shown as *not comparable* instead of as
+differences. Each snapshot and each comparison can be downloaded as a standalone HTML report.
+
 When a view is not visible the panel shows **Unavailable** with the ORA code and what to grant — it never
 falls back to placeholder numbers. Generator/benchmark/storage features degrade gracefully as well (e.g.
 free-space check is skipped without DBA views).
@@ -74,10 +81,23 @@ be `C##` common users (ORA-65096) — don't create lab schemas in the root.
 | Identifier length 128 | 12.2+ | Blueprint names always fit in 30 characters |
 | RAC / Data Guard / RMAN panels | The corresponding setup | Panels explain they don't apply |
 
-**Licensed packs are not used.** No AWR (`DBA_HIST_*`), ASH (`V$ACTIVE_SESSION_HISTORY`), `V$METRIC*` or
-SQL Tuning Advisor queries are issued. Monitoring uses `V$SYSSTAT`, `V$OSSTAT`, `V$SESSION`,
-`V$SYSTEM_EVENT`, `V$SQLSTATS`, `V$SQL_PLAN`, `V$SQL_BIND_CAPTURE` etc., and rates are computed from
-consecutive samples. Verify licensing for your own environment.
+**Licensed packs are off by default.** Unless you confirm a license per profile, no AWR (`DBA_HIST_*`,
+`DBMS_WORKLOAD_REPOSITORY`), ASH (`V$ACTIVE_SESSION_HISTORY`), `V$METRIC*` or SQL Tuning Advisor queries
+are issued. Monitoring uses `V$SYSSTAT`, `V$OSSTAT`, `V$SESSION`, `V$SYSTEM_EVENT`, `V$SQLSTATS`,
+`V$SQL_PLAN`, `V$SQL_BIND_CAPTURE` etc., and rates are computed from consecutive samples.
+
+- **ASH-lite** (always available): the app samples non-idle user sessions from `V$SESSION` once per
+  second — during every benchmark run (attributed to the run's own SIDs) and live on *Instance
+  Monitoring → Top activity* (only while the page is open; the sampler stops a minute after the last
+  read). Wait classes are folded into CPU, Commit, User I/O, Concurrency, Application and Other.
+  The app's own monitoring sessions are excluded; its workloads (benchmarks, imports) are not.
+- **Diagnostics Pack (opt-in per profile):** *Connections → Licensed packs → Confirm…* shows a warning
+  and the database's `control_management_pack_access` (which enables the features but is not proof of
+  a license) and requires an explicit confirmation; the change is audited. Then benchmarks also take an
+  AWR snapshot at the start and end of the measured window (AWR report download) and summarize Oracle
+  ASH for the run's sessions, and Top activity can read Oracle ASH. Every ASH/AWR code path checks the
+  flag server-side. Querying these views is license usage recorded in `DBA_FEATURE_USAGE_STATISTICS`
+  — only confirm for databases you know are licensed.
 
 ## 5. Safety model
 
@@ -125,9 +145,31 @@ consecutive samples. Verify licensing for your own environment.
 - Latencies are client-observed round trips (incl. network), recorded in a log-bucket histogram (~1%
   error). Warm-up operations are excluded.
 - Write scenarios only touch `<prefix>BENCH_EVENTS` and delete their rows afterwards unless disabled.
-- Plan capture prefers the real cursor plan (`DBMS_XPLAN.DISPLAY_CURSOR`), else `EXPLAIN PLAN`.
+- Plan capture prefers the real cursor plan (`DBMS_XPLAN.DISPLAY_CURSOR`), else `EXPLAIN PLAN`. For mixed
+  scenarios it shows the statement that used the most DB time in the run (from ASH-lite).
+- Every run records database activity of its own sessions (ASH-lite, see §4), plus the average active
+  sessions of *other* sessions so interference is visible. Olist scenarios (#19–26) need the Olist bundle
+  imported (prefix `OL_` by default); they only read and sample real keys at the start of each run.
 - For RAC-vs-single-instance or version comparisons, run the same scenario/data size on each target and
   compare in *History & compare*.
+
+## 7b. SQL Playground & Index Advisor
+
+- **Playground** runs one SELECT/WITH inside a READ ONLY transaction, optionally with another schema as
+  `CURRENT_SCHEMA` (the pooled session is restored afterwards). Bind variables are detected from the text
+  and always bound as strings — safe for NUMBER columns (Oracle converts the bind), whereas a numeric
+  bind against a VARCHAR2 column would convert the column and disable its index. With *Actual plan
+  statistics* on, the statement runs under `STATISTICS_LEVEL=ALL` and the plan comes from
+  `DBMS_XPLAN.DISPLAY_CURSOR(..., 'ALLSTATS LAST')`; statistics are `V$MYSTAT` deltas minus the cost of
+  reading them. Needs SELECT on `V$SQL`, `V$SQL_PLAN_STATISTICS_ALL`, `V$MYSTAT` and `V$STATNAME`
+  (SELECT_CATALOG_ROLE); otherwise the estimated plan is shown.
+- **Index Advisor** uses EXPLAIN PLAN, `ALL_TAB_COL_STATISTICS` and `ALL_IND_COLUMNS` only (no Tuning
+  Pack). Candidates: full scans of tables ≥ 10k rows whose indexable predicates keep ≤ 10% of the rows
+  (equality columns first, then one range column), and join columns of tables ≥ 100k rows probed by a
+  small row source. *Test* (lab-mode profile, authorized schema) builds `ODLX_*` as INVISIBLE, measures
+  the statement 3× without and 3× with `OPTIMIZER_USE_INVISIBLE_INDEXES=TRUE` (fresh cursors, client
+  statement cache bypassed) and reports cost, median time and logical reads. *Keep* makes it visible for
+  everyone, *Drop* removes it; only advisor-created indexes can be changed from the app.
 
 ## 7a. Data sources & imports
 

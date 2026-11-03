@@ -24,6 +24,13 @@ export interface ConnectionProfile {
   /** Schemas where this app may create objects / write data. Upper-case. */
   allowedSchemas: string[]
   notes: string
+  /**
+   * The user confirmed this database is licensed for Oracle Diagnostics Pack. Only then does the app
+   * query ASH (V$ACTIVE_SESSION_HISTORY) or AWR (DBMS_WORKLOAD_REPOSITORY). Off by default.
+   */
+  diagnosticsPack: boolean
+  /** When/by what confirmation the flag was last changed (audit trail detail). */
+  diagnosticsPackChangedAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -217,6 +224,136 @@ export interface BenchmarkScenarioInfo {
   writes: boolean
   defaultConcurrency: number
   requiresSchema: boolean
+  /** Which data set the scenario runs on: the synthetic retail blueprint or the imported Olist bundle. */
+  dataset: 'retail' | 'olist'
+  defaultPrefix: string
+}
+
+/** Oracle wait classes folded into a fixed set so chart colors never shift between runs. */
+export type ActivityClass = 'CPU' | 'User I/O' | 'Commit' | 'Concurrency' | 'Application' | 'Other'
+
+/**
+ * Database activity summary. `ash-lite` = this app's own 1-second V$SESSION sampling (no license);
+ * `ash` = Oracle's V$ACTIVE_SESSION_HISTORY (Diagnostics Pack).
+ */
+export interface ActivitySummary {
+  source: 'ash-lite' | 'ash'
+  intervalSec: number
+  /** Sampling ticks covered. */
+  ticks: number
+  /** Total active-session samples. */
+  samples: number
+  /** Average active sessions over the window. */
+  aas: number
+  byClass: Record<ActivityClass, number>
+  /** Per-second (or per-bucket) average active sessions by class. */
+  series: { t: number; v: Record<ActivityClass, number> }[]
+  topSql: { sqlId: string; samples: number; pct: number; topEvent: string; text: string | null }[]
+  topEvents: { event: string; cls: ActivityClass; samples: number; pct: number }[]
+  topSessions: { sid: number; user: string | null; module: string | null; samples: number; pct: number }[]
+}
+
+// ---------------------------------------------------------------------------------------------
+// SQL Playground & Index Advisor
+// ---------------------------------------------------------------------------------------------
+
+/** Session statistics deltas of one execution (V$MYSTAT), like SQL*Plus autotrace. */
+export type RunStats = Record<string, number>
+
+export interface PlaygroundRun {
+  sqlId: string | null
+  childNumber: number | null
+  planHash: number | null
+  columns: { name: string; type: string }[]
+  rows: (string | number | null)[][]
+  rowCount: number
+  truncated: boolean
+  elapsedMs: number
+  /** DBMS_XPLAN.DISPLAY_CURSOR 'ALLSTATS LAST' (actual rows/buffers), or EXPLAIN PLAN text as fallback. */
+  plan: string | null
+  planKind: 'actual' | 'estimated' | null
+  stats: RunStats | null
+  statsNote: string | null
+  ranAt: string
+}
+
+export interface SavedQuery {
+  id: string
+  name: string
+  sql: string
+  schema: string | null
+  binds: Record<string, string>
+  updatedAt: string
+}
+
+export type PredicateKind = 'eq' | 'in' | 'range' | 'like-prefix' | 'like-wild' | 'function' | 'implicit' | 'null' | 'neq' | 'join'
+
+export interface IndexCandidate {
+  id: string
+  owner: string
+  table: string
+  columns: string[]
+  kind: 'filter' | 'join'
+  rationale: string
+  /** Estimated fraction of the table the predicate returns (plan cardinality / table rows). */
+  selectivity: number | null
+  tableRows: number | null
+  estRows: number | null
+  /** An existing index already leads with these columns. */
+  coveredBy: string | null
+  ddl: string
+  score: number
+}
+
+export interface AdvisorNote {
+  severity: 'info' | 'warning'
+  table: string | null
+  text: string
+}
+
+export interface AdvisorResult {
+  planText: string
+  totalCost: number | null
+  fullScans: { owner: string; table: string; tableRows: number | null; estRows: number | null; cost: number | null }[]
+  candidates: IndexCandidate[]
+  notes: AdvisorNote[]
+}
+
+export interface RunMetrics {
+  cost: number | null
+  planHash: number | null
+  plan: string
+  medianMs: number
+  /** Median logical reads per execution. */
+  gets: number | null
+  physicalReads: number | null
+  rows: number
+}
+
+export interface IndexTestResult {
+  index: { name: string; owner: string; table: string; columns: string[]; sizeBytes: number | null; seconds: number }
+  before: RunMetrics
+  after: RunMetrics
+  used: boolean
+  verdict: string
+}
+
+export interface AdvisorIndex {
+  name: string
+  owner: string
+  table: string
+  columns: string[]
+  profileId: string
+  visible: boolean
+  createdAt: string
+  sql: string
+}
+
+export interface AwrSnapshots {
+  dbid: number
+  instance: number
+  beginSnap: number
+  endSnap: number
 }
 
 export interface BenchmarkConfig {
@@ -265,6 +402,15 @@ export interface BenchmarkResult {
   errorSamples: string[]
   plan: string | null
   environment: BenchmarkEnvironment
+  /** ASH-lite sampling of the benchmark's own sessions during the measured window. */
+  activity?: ActivitySummary | null
+  /** Average active sessions of all other user sessions (interference indicator). */
+  otherAas?: number | null
+  /** Oracle ASH for the same sessions — only when the profile is marked Diagnostics Pack licensed. */
+  ash?: ActivitySummary | null
+  awr?: AwrSnapshots | null
+  /** Why ASH/AWR were not captured although licensed (privileges, PDB settings…). */
+  diagnosticsNote?: string | null
 }
 
 export interface BenchmarkEnvironment {
@@ -436,6 +582,72 @@ export interface AssessmentFinding {
 
 /** An assessment section is a set of independently collected panels. */
 export type AssessmentSection = Record<string, Panel<any>>
+
+/** Stored assessment run (full data kept server-side; this is the list/trend view). */
+export interface AssessmentSnapshotMeta {
+  id: string
+  profileId: string
+  profileName: string
+  label: string
+  createdAt: string
+  dbName: string | null
+  container: string | null
+  version: string | null
+  host: string | null
+  summary: {
+    dbSizeBytes: number | null
+    segmentBytes: number | null
+    objects: number | null
+    invalid: number | null
+    users: number | null
+    parametersNonDefault: number | null
+    critical: number
+    warning: number
+    info: number
+    ok: number
+  }
+}
+
+export interface FieldChange {
+  field: string
+  a: unknown
+  b: unknown
+}
+
+export interface PanelDiff {
+  section: string
+  panel: string
+  title: string
+  /** 'unavailable' when either snapshot could not read the panel. */
+  status: 'ok' | 'unavailable'
+  note: string | null
+  added: { key: string; row: Record<string, unknown> }[]
+  removed: { key: string; row: Record<string, unknown> }[]
+  changed: { key: string; changes: FieldChange[] }[]
+  /** Numeric drift on rows present in both (sizes, counts) — reported separately from config changes. */
+  numeric: { key: string; field: string; a: number | null; b: number | null; delta: number | null }[]
+  unchanged: number
+}
+
+export interface FindingChange {
+  id: string
+  title: string
+  category: string
+  a: AssessmentSeverity | null
+  b: AssessmentSeverity | null
+  detailA: string | null
+  detailB: string | null
+}
+
+export interface AssessmentDiff {
+  a: AssessmentSnapshotMeta
+  b: AssessmentSnapshotMeta
+  identity: FieldChange[]
+  counts: { key: string; a: number | null; b: number | null; delta: number | null }[]
+  findings: { appeared: FindingChange[]; resolved: FindingChange[]; worse: FindingChange[]; better: FindingChange[]; stillOpen: FindingChange[] }
+  panels: PanelDiff[]
+  totals: { added: number; removed: number; changed: number }
+}
 
 export interface AuditEntry {
   id: string
